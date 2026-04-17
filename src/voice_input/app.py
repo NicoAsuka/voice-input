@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from voice_input.audio import AudioRecorder, compute_rms
@@ -235,8 +236,8 @@ class AppController(QObject):
             rms = compute_rms(data)
             self._overlay.update_rms(rms)
 
-    @pyqtSlot(object)
-    def _on_language_changed(self, action) -> None:
+    @pyqtSlot(QAction)
+    def _on_language_changed(self, action: QAction) -> None:
         code = action.data()
         self._config["whisper"]["language"] = code
         self._whisper.language = code
