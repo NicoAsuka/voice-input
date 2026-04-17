@@ -1,0 +1,14 @@
+[Unit]
+Description=Voice Input for KDE Plasma 6
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/voice-input/venv/bin/python -m voice_input
+Restart=on-failure
+RestartSec=5
+Environment=QT_QPA_PLATFORM=wayland
+
+[Install]
+WantedBy=graphical-session.target
