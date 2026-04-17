@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Voice Input
+Comment=Voice input for KDE Plasma 6
+Exec=voice-input
+Icon=audio-input-microphone
+Terminal=false
+Categories=Utility;Accessibility;
+X-KDE-StartupNotify=false
+NoDisplay=true
