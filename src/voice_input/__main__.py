@@ -1,9 +1,9 @@
-import sys
+# src/voice_input/__main__.py
+from voice_input.app import run_app
 
 
 def main() -> None:
-    print("voice-input: not yet implemented")
-    sys.exit(0)
+    run_app()
 
 
 if __name__ == "__main__":
