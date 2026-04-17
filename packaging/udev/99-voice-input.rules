@@ -1,0 +1,4 @@
+# Allow members of the 'input' group to read keyboard devices
+# Required only for hold-mode hotkey (evdev backend)
+# Install: sudo cp 99-voice-input.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+KERNEL=="event*", SUBSYSTEM=="input", GROUP="input", MODE="0640"
