@@ -51,10 +51,16 @@ class HotkeyManager(QObject):
         return False
 
     async def _register_kglobalaccel(self) -> bool:
-        """Register via KGlobalAccel DBus interface."""
+        """Register via KGlobalAccel DBus interface.
+
+        KGlobalAccel API (Plasma 5/6):
+          doRegister(actionId: as)
+          setShortcut(actionId: as, keys: ai, flags: u) -> ai
+        keys is an array of Qt key+modifier integers.
+        """
         try:
             from dbus_next.aio import MessageBus
-            from dbus_next import Variant
+            from PyQt6.QtGui import QKeySequence
 
             bus = await MessageBus().connect()
             introspection = await bus.introspect(
@@ -65,21 +71,31 @@ class HotkeyManager(QObject):
             )
             iface = proxy.get_interface("org.kde.KGlobalAccel")
 
-            modifiers, key = parse_key_string(self.key_string)
-            qt_shortcut = self.key_string
+            # action_id: [componentUnique, actionUnique, actionFriendlyName, componentFriendlyName]
+            action_id = ["voice-input", "toggle-recording", "Toggle Recording", "Voice Input"]
 
-            action_id = ["voice-input", "toggle-recording", "Voice Input", qt_shortcut]
+            # Step 1: register the action
+            await iface.call_do_register(action_id)
 
-            await iface.call_set_shortcut(
-                action_id,
-                [Variant("s", qt_shortcut)],
-                0x2,  # SetPresent flag
-            )
+            # Step 2: parse key string to Qt integer code
+            seq = QKeySequence(self.key_string)
+            if seq.isEmpty():
+                log.warning("Could not parse key sequence: %s", self.key_string)
+                return False
+            key_combo = seq[0]
+            # toCombined() → int (Qt6), or directly int (Qt5)
+            key_int = key_combo.toCombined() if hasattr(key_combo, "toCombined") else int(key_combo)
 
-            iface.on_your_shortcut_got_changed(self._on_shortcut_triggered)
+            # Step 3: set the shortcut (flags: 0x2 = SetPresent)
+            await iface.call_set_shortcut(action_id, [key_int], 2)
+
+            # Step 4: listen for component shortcut trigger via globalShortcutsByKey polling
+            # or subscribe to yourShortcutGotChanged (fires on key-change, not on press).
+            # For press events, subscribe to the component object signal.
+            await self._subscribe_component_trigger(bus, action_id)
 
             self._dbus_registered = True
-            log.info("KGlobalAccel registered: %s", self.key_string)
+            log.info("KGlobalAccel registered: %s (key_int=0x%x)", self.key_string, key_int)
             return True
 
         except Exception as e:
@@ -87,8 +103,27 @@ class HotkeyManager(QObject):
             log.warning("Use tray menu or switch to evdev mode in config.")
             return False
 
+    async def _subscribe_component_trigger(self, bus, action_id: list[str]) -> None:
+        """Subscribe to shortcutPressed signal on the /component/<name> path."""
+        try:
+            from dbus_next.aio import MessageBus
+            component_path = f"/component/{action_id[0].replace('-', '_')}"
+            comp_introspect = await bus.introspect("org.kde.kglobalaccel", component_path)
+            comp_proxy = bus.get_proxy_object("org.kde.kglobalaccel", component_path, comp_introspect)
+            # Try the component interface for shortcut trigger
+            for iface_name in ["org.kde.kglobalaccel.Component"]:
+                try:
+                    comp_iface = comp_proxy.get_interface(iface_name)
+                    comp_iface.on_global_shortcut_pressed(self._on_shortcut_triggered)
+                    log.info("Subscribed to KGlobalAccel component trigger at %s", component_path)
+                    return
+                except Exception:
+                    pass
+        except Exception as e:
+            log.debug("Component trigger subscription failed (non-fatal): %s", e)
+
     def _on_shortcut_triggered(self, *args) -> None:
-        log.debug("Hotkey triggered via KGlobalAccel")
+        log.info("Hotkey triggered via KGlobalAccel")
         self.recording_requested.emit()
 
     def _register_evdev(self) -> bool:
