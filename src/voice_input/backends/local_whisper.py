@@ -12,6 +12,12 @@ log = logging.getLogger(__name__)
 # Minimum samples to attempt transcription (0.1s at 16kHz)
 MIN_SAMPLES = 1600
 
+# Try to import WhisperModel at module level for proper mocking in tests
+try:
+    from faster_whisper import WhisperModel
+except ImportError:
+    WhisperModel = None  # type: ignore[assignment,misc]
+
 
 class LocalWhisperBackend(TranscriptionBackend):
     """Local faster-whisper transcription backend."""
@@ -19,11 +25,9 @@ class LocalWhisperBackend(TranscriptionBackend):
     def __init__(
         self,
         model_name: str = "medium",
-        language: str = "zh",
         device: str = "auto",
     ) -> None:
         self.model_name = model_name
-        self.language = language
         self.device = device
         self._model = None
 
@@ -31,33 +35,40 @@ class LocalWhisperBackend(TranscriptionBackend):
         return True
 
     async def initialize(self) -> None:
-        from faster_whisper import WhisperModel
+        if WhisperModel is None:
+            raise RuntimeError("faster-whisper is not installed")
+        if self._model is not None:
+            log.debug("Model already loaded, skipping re-initialization")
+            return
+        try:
+            model_dir = xdg_cache_dir() / "models"
+            model_dir.mkdir(parents=True, exist_ok=True)
 
-        model_dir = xdg_cache_dir() / "models"
-        model_dir.mkdir(parents=True, exist_ok=True)
+            compute_type = "int8"
+            actual_device = "cpu"
+            if self.device in ("auto", "cuda"):
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        actual_device = "cuda"
+                        compute_type = "float16"
+                except ImportError:
+                    pass
 
-        compute_type = "int8"
-        actual_device = "cpu"
-        if self.device in ("auto", "cuda"):
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    actual_device = "cuda"
-                    compute_type = "float16"
-            except ImportError:
-                pass
-
-        log.info(
-            "Loading whisper model=%s device=%s compute_type=%s",
-            self.model_name, actual_device, compute_type,
-        )
-        self._model = WhisperModel(
-            self.model_name,
-            device=actual_device,
-            compute_type=compute_type,
-            download_root=str(model_dir),
-        )
-        log.info("Whisper model loaded and ready")
+            log.info(
+                "Loading whisper model=%s device=%s compute_type=%s",
+                self.model_name, actual_device, compute_type,
+            )
+            self._model = WhisperModel(
+                self.model_name,
+                device=actual_device,
+                compute_type=compute_type,
+                download_root=str(model_dir),
+            )
+            log.info("Whisper model loaded and ready")
+        except Exception as e:
+            log.error("Failed to load whisper model: %s", e)
+            raise
 
     async def transcribe(self, audio_data: np.ndarray, language: str) -> str:
         if self._model is None or len(audio_data) < MIN_SAMPLES:

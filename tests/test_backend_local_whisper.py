@@ -6,22 +6,22 @@ from voice_input.backends.local_whisper import LocalWhisperBackend
 
 
 def test_is_streaming_returns_true():
-    backend = LocalWhisperBackend(model_name="tiny", language="zh", device="cpu")
+    backend = LocalWhisperBackend(model_name="tiny", device="cpu")
     assert backend.is_streaming() is True
 
 
 @pytest.mark.asyncio
 async def test_initialize_loads_model():
-    backend = LocalWhisperBackend(model_name="tiny", language="zh", device="cpu")
+    backend = LocalWhisperBackend(model_name="tiny", device="cpu")
     mock_model = MagicMock()
-    with patch("faster_whisper.WhisperModel", return_value=mock_model):
+    with patch("voice_input.backends.local_whisper.WhisperModel", return_value=mock_model):
         await backend.initialize()
     assert backend._model is mock_model
 
 
 @pytest.mark.asyncio
 async def test_transcribe_returns_text():
-    backend = LocalWhisperBackend(model_name="tiny", language="zh", device="cpu")
+    backend = LocalWhisperBackend(model_name="tiny", device="cpu")
     mock_segment = MagicMock()
     mock_segment.text = "hello world"
     mock_model = MagicMock()
@@ -35,7 +35,7 @@ async def test_transcribe_returns_text():
 
 @pytest.mark.asyncio
 async def test_transcribe_short_audio_returns_empty():
-    backend = LocalWhisperBackend(model_name="tiny", language="zh", device="cpu")
+    backend = LocalWhisperBackend(model_name="tiny", device="cpu")
     backend._model = MagicMock()
 
     audio = np.zeros(100, dtype=np.int16)  # too short
