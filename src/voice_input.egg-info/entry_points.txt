@@ -1,0 +1,2 @@
+[console_scripts]
+voice-input = voice_input.__main__:main
