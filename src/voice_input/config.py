@@ -21,10 +21,14 @@ DEFAULT_CONFIG: dict = {
         "mode": "toggle",
         "key": "Meta+Space",
     },
-    "whisper": {
-        "model": "medium",
-        "language": "zh",
-        "device": "auto",
+    "stt": {
+        "backend": "local",
+        "local": {
+            "engine": "whisper",
+            "model": "medium",
+            "language": "zh",
+            "device": "auto",
+        },
     },
     "llm": {
         "enabled": True,
@@ -37,6 +41,9 @@ DEFAULT_CONFIG: dict = {
     },
     "ui": {
         "overlay_margin_bottom": 80,
+    },
+    "inject": {
+        "paste_method": "ctrl_v",
     },
 }
 
