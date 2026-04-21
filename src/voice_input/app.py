@@ -14,6 +14,7 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from voice_input.audio import AudioRecorder, compute_rms
+from voice_input.backends import create_backend
 from voice_input.config import AppConfig, load_config, save_config, xdg_config_dir
 from voice_input.hotkey import HotkeyManager
 from voice_input.injector import TextInjector
@@ -29,6 +30,7 @@ log = logging.getLogger(__name__)
 class AppState(enum.Enum):
     IDLE = "Idle"
     RECORDING = "Recording"
+    TRANSCRIBING = "Transcribing"
     REFINING = "Refining"
 
     _transitions = None  # placeholder, set below
@@ -39,7 +41,8 @@ class AppState(enum.Enum):
 
 _VALID_TRANSITIONS = {
     AppState.IDLE: {AppState.RECORDING},
-    AppState.RECORDING: {AppState.IDLE, AppState.REFINING},
+    AppState.RECORDING: {AppState.IDLE, AppState.TRANSCRIBING, AppState.REFINING},
+    AppState.TRANSCRIBING: {AppState.IDLE, AppState.REFINING},
     AppState.REFINING: {AppState.IDLE},
 }
 
@@ -76,11 +79,19 @@ class AppController(QObject):
             mode=config["hotkey"]["mode"],
             key=config["hotkey"]["key"],
         )
-        self._injector = TextInjector()
+        self._injector = TextInjector(
+            paste_method=config.get("inject", {}).get("paste_method", "ctrl_v"),
+        )
         self._overlay = OverlayWidget(
             margin_bottom=config["ui"]["overlay_margin_bottom"],
         )
         self._tray = TrayManager()
+        self._tray.set_backend(config.get("stt", {}).get("backend", "local"))
+
+        # STT backend. Streaming backends update text while recording; non-streaming
+        # backends receive the full audio buffer after recording stops.
+        self._backend = create_backend(config)
+        self._backend_is_streaming = self._backend.is_streaming()
 
         # LLM (initialized lazily with API key)
         self._llm: LLMRefiner | None = None
@@ -107,6 +118,8 @@ class AppController(QObject):
         # Tray
         self._tray.toggle_action.triggered.connect(self._on_toggle_recording)
         self._tray.lang_group.triggered.connect(self._on_language_changed)
+        self._tray.stt_group.triggered.connect(self._on_backend_changed)
+        self._tray.stt_settings_action.triggered.connect(self._on_open_settings)
         self._tray.llm_toggle.toggled.connect(self._on_llm_toggled)
         self._tray.llm_settings_action.triggered.connect(self._on_open_settings)
         self._tray.about_action.triggered.connect(self._on_about)
@@ -127,13 +140,23 @@ class AppController(QObject):
         if self._hotkey.mode == "hold":
             asyncio.create_task(self._hotkey.run_evdev_loop())
 
-        # Pre-load whisper model in background
-        self._whisper.start()
+        # Initialize STT backend
+        try:
+            await self._backend.initialize()
+        except Exception as e:
+            log.error("Backend initialization failed: %s", e)
+
+        # Pre-load whisper model in background (local streaming mode only)
+        if self._backend_is_streaming:
+            self._whisper.start()
 
         # Initialize LLM if enabled
         self._init_llm()
 
-        log.info("Voice Input started")
+        log.info(
+            "Voice Input started (backend=%s)",
+            self._config.get("stt", {}).get("backend", "local"),
+        )
 
     def _init_llm(self) -> None:
         if not self._llm_enabled:
@@ -162,16 +185,20 @@ class AppController(QObject):
 
     @pyqtSlot()
     def _on_toggle_recording(self) -> None:
+        log.info("Toggle recording requested, current state: %s", self._state.value)
         if self._state == AppState.IDLE:
             self._on_start_recording()
         elif self._state == AppState.RECORDING:
             self._on_stop_recording()
+        else:
+            log.warning("Ignoring toggle in state %s", self._state.value)
 
     @pyqtSlot()
     def _on_start_recording(self) -> None:
         if self._state != AppState.IDLE:
             return
         self._whisper.reset()
+        self._whisper.set_active(True)
         self._last_transcription = ""
         self._audio.start()
         self._viz_timer.start()
@@ -185,37 +212,88 @@ class AppController(QObject):
             return
         self._audio.stop()
         self._viz_timer.stop()
-        self._whisper.stop()
+        self._whisper.set_active(False)
+        audio_buffer = self._whisper.get_audio_buffer()
 
-        text = self._last_transcription
-        if not text:
-            self._overlay.animate_exit(on_finished=self._overlay.hide)
-            self._set_state(AppState.IDLE)
-            return
+        if self._backend_is_streaming:
+            if len(audio_buffer) < 1600 and not self._last_transcription:
+                self._overlay.animate_exit(on_finished=self._overlay.hide)
+                self._set_state(AppState.IDLE)
+                return
 
-        if self._llm_enabled and self._llm is not None:
-            self._set_state(AppState.REFINING)
-            self._overlay.update_text("Refining...")
-            asyncio.ensure_future(self._refine_and_inject(text))
+            self._set_state(AppState.TRANSCRIBING)
+            self._overlay.update_text("识别中...")
+            asyncio.ensure_future(
+                self._transcribe_and_inject(
+                    audio_buffer,
+                    fallback_text=self._last_transcription,
+                )
+            )
         else:
-            self._inject_and_finish(text)
+            if len(audio_buffer) < 1600:
+                self._overlay.animate_exit(on_finished=self._overlay.hide)
+                self._set_state(AppState.IDLE)
+                return
+            self._set_state(AppState.TRANSCRIBING)
+            self._overlay.update_text("识别中...")
+            asyncio.ensure_future(self._transcribe_and_inject(audio_buffer))
 
     async def _refine_and_inject(self, text: str) -> None:
         corrected = await self._llm.refine(text)
         self._inject_and_finish(corrected)
 
+    async def _transcribe_and_inject(
+        self,
+        audio_buffer: np.ndarray,
+        fallback_text: str = "",
+    ) -> None:
+        """Run final STT on the full audio buffer, then optionally refine and inject."""
+        try:
+            text = await self._backend.transcribe(
+                audio_buffer,
+                self._config["whisper"]["language"],
+            )
+        except Exception as e:
+            log.error("Remote transcription failed: %s", e)
+            self._send_notification("Voice Input Error", f"STT API error: {e}")
+            text = ""
+
+        if not text and fallback_text:
+            log.warning("Final transcription returned empty; using last partial text")
+            text = fallback_text
+
+        if not text:
+            self._overlay.animate_exit(on_finished=self._overlay.hide)
+            self._set_state(AppState.IDLE)
+            return
+
+        self._last_transcription = text
+        if self._llm_enabled and self._llm is not None:
+            self._set_state(AppState.REFINING)
+            self._overlay.update_text("Refining...")
+            await self._refine_and_inject(text)
+        else:
+            self._inject_and_finish(text)
+
     def _inject_and_finish(self, text: str) -> None:
-        self._overlay.animate_exit(on_finished=self._overlay.hide)
-        if text:
-            self._injector.inject(text)
         self._set_state(AppState.IDLE)
+        if text:
+            # Start injection after overlay finishes its exit animation,
+            # otherwise ydotool's Ctrl+V may be sent to the overlay instead
+            # of the target application.
+            def _do_inject():
+                import threading
+                threading.Thread(target=self._injector.inject, args=(text,), daemon=True).start()
+            self._overlay.animate_exit(on_finished=lambda: (self._overlay.hide(), _do_inject()))
+        else:
+            self._overlay.animate_exit(on_finished=self._overlay.hide)
 
     # --- Callbacks ---
 
     @pyqtSlot(str)
     def _on_transcription(self, text: str) -> None:
         self._last_transcription = text
-        if self._state == AppState.RECORDING:
+        if self._state == AppState.RECORDING and self._backend_is_streaming:
             self._overlay.update_text(text)
 
     @pyqtSlot(str)
@@ -243,6 +321,25 @@ class AppController(QObject):
         self._whisper.language = code
         save_config(self._config)
         log.info("Language changed to: %s", code)
+
+    @pyqtSlot(QAction)
+    def _on_backend_changed(self, action: QAction) -> None:
+        backend_name = action.data()
+        if backend_name == self._config.get("stt", {}).get("backend"):
+            return
+
+        self._config.setdefault("stt", {})["backend"] = backend_name
+        save_config(self._config)
+
+        asyncio.ensure_future(self._backend.cleanup())
+        self._backend = create_backend(self._config)
+        self._backend_is_streaming = self._backend.is_streaming()
+        asyncio.ensure_future(self._backend.initialize())
+
+        if self._backend_is_streaming and not self._whisper.isRunning():
+            self._whisper.start()
+
+        log.info("STT backend changed to: %s", backend_name)
 
     @pyqtSlot(bool)
     def _on_llm_toggled(self, enabled: bool) -> None:

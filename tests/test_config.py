@@ -20,6 +20,15 @@ def test_default_config_has_required_sections():
     assert cfg["ui"]["overlay_margin_bottom"] == 80
 
 
+def test_default_config_has_stt_section():
+    cfg = DEFAULT_CONFIG
+    assert cfg["stt"]["backend"] == "local"
+    assert cfg["stt"]["openai"]["api_base"] == "https://api.openai.com/v1"
+    assert cfg["stt"]["openai"]["model"] == "whisper-1"
+    assert cfg["stt"]["google"]["credentials_path"] == ""
+    assert cfg["stt"]["volcengine"]["app_id"] == ""
+
+
 def test_load_config_creates_default_when_missing(tmp_path):
     config_dir = tmp_path / "config"
     cfg = load_config(config_dir=config_dir)

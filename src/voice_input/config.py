@@ -38,6 +38,22 @@ DEFAULT_CONFIG: dict = {
     "ui": {
         "overlay_margin_bottom": 80,
     },
+    "inject": {
+        "paste_method": "ctrl_v",
+    },
+    "stt": {
+        "backend": "local",
+        "openai": {
+            "api_base": "https://api.openai.com/v1",
+            "model": "whisper-1",
+        },
+        "google": {
+            "credentials_path": "",
+        },
+        "volcengine": {
+            "app_id": "",
+        },
+    },
 }
 
 

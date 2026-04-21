@@ -77,8 +77,8 @@ class OverlayWidget(QWidget):
         self._try_layer_shell()
         self._try_blur()
 
-        # Animations
-        self._opacity_anim = QPropertyAnimation(self, b"windowOpacity")
+        # Animations — use custom opacity property (windowOpacity unsupported on some Wayland backends)
+        self._opacity_anim = QPropertyAnimation(self, b"capsuleOpacity")
         self._width_anim = QPropertyAnimation(self, b"capsuleTextWidth")
 
     def _setup_geometry(self) -> None:
@@ -123,6 +123,11 @@ class OverlayWidget(QWidget):
             self._use_blur = False
 
     def _animate_entry(self) -> None:
+        # Disconnect stale finished→hide() from a previous animate_exit
+        try:
+            self._opacity_anim.finished.disconnect()
+        except TypeError:
+            pass
         self._opacity_anim.setDuration(350)
         self._opacity_anim.setStartValue(0.0)
         self._opacity_anim.setEndValue(1.0)
@@ -130,6 +135,11 @@ class OverlayWidget(QWidget):
         self._opacity_anim.start()
 
     def animate_exit(self, on_finished=None) -> None:
+        self._opacity_anim.stop()
+        try:
+            self._opacity_anim.finished.disconnect()
+        except TypeError:
+            pass
         self._opacity_anim.setDuration(220)
         self._opacity_anim.setStartValue(1.0)
         self._opacity_anim.setEndValue(0.0)
@@ -137,6 +147,17 @@ class OverlayWidget(QWidget):
         if on_finished:
             self._opacity_anim.finished.connect(on_finished)
         self._opacity_anim.start()
+
+    # --- Custom opacity property (avoids windowOpacity Wayland issues) ---
+
+    def get_capsule_opacity(self) -> float:
+        return self._opacity
+
+    def set_capsule_opacity(self, v: float) -> None:
+        self._opacity = v
+        self.update()
+
+    capsuleOpacity = pyqtProperty(float, get_capsule_opacity, set_capsule_opacity)
 
     # --- Properties for animation ---
 
@@ -195,6 +216,7 @@ class OverlayWidget(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setOpacity(max(0.0, min(1.0, self._opacity)))
 
         # Background capsule
         bg_color = BG_COLOR_BLUR if self._use_blur else BG_COLOR_SOLID

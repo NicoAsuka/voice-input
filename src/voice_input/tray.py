@@ -20,6 +20,13 @@ LANGUAGES = {
     "ko": "한국어",
 }
 
+STT_BACKENDS = {
+    "local": "Local (faster-whisper)",
+    "openai": "OpenAI Whisper API",
+    "google": "Google Speech-to-Text",
+    "volcengine": "字节火山语音识别",
+}
+
 
 class TrayManager(QSystemTrayIcon):
     """System tray icon using StatusNotifierItem (via Qt6 on KDE).
@@ -31,6 +38,7 @@ class TrayManager(QSystemTrayIcon):
         super().__init__(parent)
         self._state = "Idle"
         self._current_language = "zh"
+        self._current_backend = "local"
         self._llm_enabled = True
 
         # Icons from Breeze theme
@@ -73,6 +81,25 @@ class TrayManager(QSystemTrayIcon):
             self._lang_actions[code] = action
         menu.addMenu(lang_menu)
 
+        # STT Backend submenu
+        stt_menu = QMenu("STT Backend", menu)
+        self._stt_group = QActionGroup(stt_menu)
+        self._stt_group.setExclusive(True)
+        self._stt_actions: dict[str, QAction] = {}
+        for key, label in STT_BACKENDS.items():
+            action = QAction(label, stt_menu)
+            action.setCheckable(True)
+            action.setData(key)
+            if key == self._current_backend:
+                action.setChecked(True)
+            self._stt_group.addAction(action)
+            stt_menu.addAction(action)
+            self._stt_actions[key] = action
+        stt_menu.addSeparator()
+        self._stt_settings_action = QAction("Settings...", stt_menu)
+        stt_menu.addAction(self._stt_settings_action)
+        menu.addMenu(stt_menu)
+
         # LLM submenu
         llm_menu = QMenu("LLM Refinement", menu)
         self._llm_toggle = QAction("Enabled", llm_menu)
@@ -113,6 +140,14 @@ class TrayManager(QSystemTrayIcon):
         return self._lang_group
 
     @property
+    def stt_group(self) -> QActionGroup:
+        return self._stt_group
+
+    @property
+    def stt_settings_action(self) -> QAction:
+        return self._stt_settings_action
+
+    @property
     def llm_toggle(self) -> QAction:
         return self._llm_toggle
 
@@ -129,15 +164,16 @@ class TrayManager(QSystemTrayIcon):
         return self._about_action
 
     def set_state(self, state: str) -> None:
-        """Update tray state: 'Idle', 'Recording', 'Refining'."""
+        """Update tray state: 'Idle', 'Recording', 'Transcribing', 'Refining'."""
         self._state = state
         self._status_action.setText(f"Status: {state}")
         self.setToolTip(f"Voice Input — {state}")
 
         if state == "Recording":
             self._toggle_action.setText("Stop Recording")
+            self._toggle_action.setEnabled(True)
             self.setIcon(self._icon_recording)
-        elif state == "Refining":
+        elif state in ("Transcribing", "Refining"):
             self._toggle_action.setText("Stop Recording")
             self._toggle_action.setEnabled(False)
         else:
@@ -149,6 +185,11 @@ class TrayManager(QSystemTrayIcon):
         self._current_language = code
         if code in self._lang_actions:
             self._lang_actions[code].setChecked(True)
+
+    def set_backend(self, backend: str) -> None:
+        self._current_backend = backend
+        if backend in self._stt_actions:
+            self._stt_actions[backend].setChecked(True)
 
     def set_llm_enabled(self, enabled: bool) -> None:
         self._llm_enabled = enabled

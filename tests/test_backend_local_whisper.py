@@ -28,9 +28,24 @@ async def test_transcribe_returns_text():
     mock_model.transcribe.return_value = ([mock_segment], None)
     backend._model = mock_model
 
-    audio = np.zeros(16000, dtype=np.int16)
+    audio = np.ones(16000, dtype=np.int16) * 1000
     result = await backend.transcribe(audio, "zh")
     assert result == "hello world"
+    kwargs = mock_model.transcribe.call_args.kwargs
+    assert kwargs["vad_filter"] is True
+    assert kwargs["condition_on_previous_text"] is False
+
+
+@pytest.mark.asyncio
+async def test_transcribe_silent_audio_returns_empty_without_model_call():
+    backend = LocalWhisperBackend(model_name="tiny", device="cpu")
+    mock_model = MagicMock()
+    backend._model = mock_model
+
+    audio = np.zeros(16000, dtype=np.int16)
+    result = await backend.transcribe(audio, "zh")
+    assert result == ""
+    mock_model.transcribe.assert_not_called()
 
 
 @pytest.mark.asyncio

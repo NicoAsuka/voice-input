@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import queue
-from pathlib import Path
 
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -12,12 +11,19 @@ from voice_input.config import xdg_cache_dir
 
 log = logging.getLogger(__name__)
 
+# Max audio to transcribe at once (seconds). Keeps transcription fast.
+MAX_BUFFER_SECONDS = 30
+SAMPLE_RATE = 16000
+MAX_BUFFER_SAMPLES = MAX_BUFFER_SECONDS * SAMPLE_RATE
+MIN_RMS = 32.0
+MIN_PEAK = 256
+
 
 class WhisperWorker(QThread):
     """Runs faster-whisper transcription in a background thread.
 
-    Every 0.5s, drains the audio queue, accumulates into a buffer,
-    and runs transcription on the full buffer.
+    Polls the audio queue, accumulates into a buffer (capped at 30s),
+    and runs transcription. Only active while recording.
     """
 
     transcription_updated = pyqtSignal(str)
@@ -42,9 +48,18 @@ class WhisperWorker(QThread):
         self.audio_buffer = np.array([], dtype=np.int16)
         self._model = None
         self._running = False
+        self._active = False
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
+
+    def reset(self) -> None:
+        self.audio_buffer = np.array([], dtype=np.int16)
+        # Drain leftover audio
+        self.drain_queue()
 
     def drain_queue(self) -> np.ndarray:
-        """Drain all available chunks from the queue. Returns concatenated int16 array."""
+        """Drain all available chunks from the queue."""
         chunks: list[np.ndarray] = []
         while True:
             try:
@@ -56,19 +71,32 @@ class WhisperWorker(QThread):
         return np.concatenate(chunks)
 
     def accumulate(self) -> None:
-        """Drain queue and append to the cumulative audio buffer."""
+        """Append queued audio to the cumulative audio buffer."""
         new_data = self.drain_queue()
-        if len(new_data) > 0:
-            self.audio_buffer = np.concatenate([self.audio_buffer, new_data])
+        if len(new_data) == 0:
+            return
+        self.audio_buffer = np.concatenate([self.audio_buffer, new_data])
+        if len(self.audio_buffer) > MAX_BUFFER_SAMPLES:
+            self.audio_buffer = self.audio_buffer[-MAX_BUFFER_SAMPLES:]
 
-    def reset(self) -> None:
-        """Clear the audio buffer for a new recording session."""
-        self.audio_buffer = np.array([], dtype=np.int16)
-        # Also drain any leftover audio
-        self.drain_queue()
+    def _drain_and_accumulate(self) -> None:
+        self.accumulate()
+
+    def get_audio_buffer(self) -> np.ndarray:
+        """Return a copy of the current audio buffer."""
+        self._drain_and_accumulate()
+        if len(self.audio_buffer):
+            rms = float(np.sqrt(np.mean(self.audio_buffer.astype(np.float64) ** 2)))
+            peak = int(np.max(np.abs(self.audio_buffer)))
+            log.info(
+                "Captured audio buffer: duration=%.2fs rms=%.1f peak=%d",
+                len(self.audio_buffer) / SAMPLE_RATE,
+                rms,
+                peak,
+            )
+        return self.audio_buffer.copy()
 
     def _load_model(self) -> bool:
-        """Load the faster-whisper model. Returns True on success."""
         try:
             from faster_whisper import WhisperModel
 
@@ -96,6 +124,7 @@ class WhisperWorker(QThread):
                 compute_type=compute_type,
                 download_root=str(model_dir),
             )
+            log.info("Whisper model loaded and ready")
             self.model_ready.emit()
             return True
         except Exception as e:
@@ -104,17 +133,22 @@ class WhisperWorker(QThread):
             return False
 
     def _transcribe(self) -> str | None:
-        """Transcribe the current audio buffer. Returns text or None."""
-        if self._model is None or len(self.audio_buffer) < 1600:  # < 0.1s
+        if self._model is None or len(self.audio_buffer) < 1600:
+            return None
+        rms = float(np.sqrt(np.mean(self.audio_buffer.astype(np.float64) ** 2)))
+        peak = int(np.max(np.abs(self.audio_buffer))) if len(self.audio_buffer) else 0
+        if rms < MIN_RMS or peak < MIN_PEAK:
             return None
         try:
-            # Convert int16 to float32 in [-1, 1] as required by faster-whisper
             audio_f32 = self.audio_buffer.astype(np.float32) / 32768.0
             segments, _ = self._model.transcribe(
                 audio_f32,
                 language=self.language,
                 beam_size=5,
                 vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500},
+                condition_on_previous_text=False,
+                hallucination_silence_threshold=1.0,
             )
             text = "".join(seg.text for seg in segments)
             return text.strip()
@@ -123,17 +157,18 @@ class WhisperWorker(QThread):
             return None
 
     def run(self) -> None:
-        """Thread main loop: load model, then poll queue and transcribe."""
         if not self._load_model():
             return
         self._running = True
         while self._running:
             self.msleep(self.POLL_INTERVAL_MS)
-            self.accumulate()
+            if not self._active:
+                continue
+            self._drain_and_accumulate()
             text = self._transcribe()
             if text is not None:
+                log.debug("Transcription: %s", text[:80])
                 self.transcription_updated.emit(text)
 
     def stop(self) -> None:
-        """Signal the worker to stop after current iteration."""
         self._running = False

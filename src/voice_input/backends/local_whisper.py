@@ -11,6 +11,8 @@ log = logging.getLogger(__name__)
 
 # Minimum samples to attempt transcription (0.1s at 16kHz)
 MIN_SAMPLES = 1600
+MIN_RMS = 32.0
+MIN_PEAK = 256
 
 # Try to import WhisperModel at module level for proper mocking in tests
 try:
@@ -73,13 +75,33 @@ class LocalWhisperBackend(TranscriptionBackend):
     async def transcribe(self, audio_data: np.ndarray, language: str) -> str:
         if self._model is None or len(audio_data) < MIN_SAMPLES:
             return ""
+        rms = float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
+        peak = int(np.max(np.abs(audio_data))) if len(audio_data) else 0
+        duration = len(audio_data) / 16000.0
+        log.info(
+            "Local audio stats: duration=%.2fs rms=%.1f peak=%d",
+            duration,
+            rms,
+            peak,
+        )
+        if rms < MIN_RMS or peak < MIN_PEAK:
+            log.warning(
+                "Local audio below speech threshold; skipping transcription "
+                "(rms=%.1f peak=%d)",
+                rms,
+                peak,
+            )
+            return ""
         try:
             audio_f32 = audio_data.astype(np.float32) / 32768.0
             segments, _ = self._model.transcribe(
                 audio_f32,
                 language=language,
                 beam_size=5,
-                vad_filter=False,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500},
+                condition_on_previous_text=False,
+                hallucination_silence_threshold=1.0,
             )
             text = "".join(seg.text for seg in segments)
             return text.strip()

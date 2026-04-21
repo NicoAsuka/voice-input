@@ -39,6 +39,9 @@ class HotkeyManager(QObject):
         self.mode = mode
         self.key_string = key
         self._dbus_registered = False
+        self._dbus_bus = None  # prevent GC of DBus connection
+        self._dbus_proxy = None
+        self._dbus_comp_proxy = None
         self._evdev_task: asyncio.Task | None = None
 
     async def register(self) -> bool:
@@ -63,12 +66,14 @@ class HotkeyManager(QObject):
             from PyQt6.QtGui import QKeySequence
 
             bus = await MessageBus().connect()
+            self._dbus_bus = bus  # prevent GC
             introspection = await bus.introspect(
                 "org.kde.kglobalaccel", "/kglobalaccel"
             )
             proxy = bus.get_proxy_object(
                 "org.kde.kglobalaccel", "/kglobalaccel", introspection
             )
+            self._dbus_proxy = proxy  # prevent GC
             iface = proxy.get_interface("org.kde.KGlobalAccel")
 
             # action_id: [componentUnique, actionUnique, actionFriendlyName, componentFriendlyName]
@@ -104,23 +109,26 @@ class HotkeyManager(QObject):
             return False
 
     async def _subscribe_component_trigger(self, bus, action_id: list[str]) -> None:
-        """Subscribe to shortcutPressed signal on the /component/<name> path."""
+        """Subscribe to globalShortcutPressed on /component/<name>."""
+        component_path = f"/component/{action_id[0].replace('-', '_')}"
         try:
-            from dbus_next.aio import MessageBus
-            component_path = f"/component/{action_id[0].replace('-', '_')}"
             comp_introspect = await bus.introspect("org.kde.kglobalaccel", component_path)
-            comp_proxy = bus.get_proxy_object("org.kde.kglobalaccel", component_path, comp_introspect)
-            # Try the component interface for shortcut trigger
-            for iface_name in ["org.kde.kglobalaccel.Component"]:
-                try:
-                    comp_iface = comp_proxy.get_interface(iface_name)
-                    comp_iface.on_global_shortcut_pressed(self._on_shortcut_triggered)
-                    log.info("Subscribed to KGlobalAccel component trigger at %s", component_path)
-                    return
-                except Exception:
-                    pass
+            comp_proxy = bus.get_proxy_object(
+                "org.kde.kglobalaccel", component_path, comp_introspect
+            )
+            self._dbus_comp_proxy = comp_proxy  # prevent GC
+            comp_iface = comp_proxy.get_interface("org.kde.kglobalaccel.Component")
+            comp_iface.on_global_shortcut_pressed(self._on_component_shortcut_pressed)
+            log.info("Subscribed to globalShortcutPressed at %s", component_path)
         except Exception as e:
-            log.debug("Component trigger subscription failed (non-fatal): %s", e)
+            log.warning("Component trigger subscription failed: %s", e)
+
+    def _on_component_shortcut_pressed(
+        self, component_unique: str, shortcut_unique: str, timestamp: int
+    ) -> None:
+        log.info("KGlobalAccel shortcut pressed: %s/%s", component_unique, shortcut_unique)
+        if shortcut_unique == "toggle-recording":
+            self.recording_requested.emit()
 
     def _on_shortcut_triggered(self, *args) -> None:
         log.info("Hotkey triggered via KGlobalAccel")
