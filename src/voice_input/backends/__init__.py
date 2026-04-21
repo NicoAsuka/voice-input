@@ -1,26 +1,19 @@
 """STT backend abstraction and factory."""
 from __future__ import annotations
 
-import logging
-
 from voice_input.backends.base import TranscriptionBackend
+from voice_input.config import AppConfig
 
-log = logging.getLogger(__name__)
 
-
-def create_backend(config: dict) -> TranscriptionBackend:
+def create_backend(config: AppConfig) -> TranscriptionBackend:
     """Create a transcription backend from app config."""
     stt_cfg = config.get("stt", {})
     backend_name = stt_cfg.get("backend", "local")
 
     if backend_name == "local":
-        from voice_input.backends.local_whisper import LocalWhisperBackend
+        from voice_input.backends.local import LocalBackend
 
-        whisper_cfg = config.get("whisper", {})
-        return LocalWhisperBackend(
-            model_name=whisper_cfg.get("model", "medium"),
-            device=whisper_cfg.get("device", "auto"),
-        )
+        return LocalBackend(config)
 
     if backend_name == "openai":
         from voice_input.backends.openai_whisper import OpenAIWhisperBackend

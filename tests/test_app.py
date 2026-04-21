@@ -4,8 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
-from voice_input.app import AppState
-from voice_input.app import AppController
+from voice_input.app import AppController, AppState
 
 
 def test_state_transitions():
@@ -16,6 +15,11 @@ def test_state_transitions():
     assert AppState.REFINING.can_transition_to(AppState.IDLE)
     assert not AppState.IDLE.can_transition_to(AppState.REFINING)
     assert not AppState.REFINING.can_transition_to(AppState.RECORDING)
+
+
+def test_transcribing_state_exists():
+    assert hasattr(AppState, "TRANSCRIBING")
+    assert AppState.TRANSCRIBING.value == "Transcribing"
 
 
 def test_transcribing_state_transitions():
@@ -32,7 +36,7 @@ async def test_final_transcription_uses_full_buffer_before_injecting():
     controller = AppController.__new__(AppController)
     controller._backend = MagicMock()
     controller._backend.transcribe = AsyncMock(return_value="final text")
-    controller._config = {"whisper": {"language": "zh"}}
+    controller._language = "zh"
     controller._llm_enabled = False
     controller._llm = None
     controller._last_transcription = "partial text"
@@ -55,7 +59,7 @@ async def test_final_transcription_falls_back_to_partial_text():
     controller = AppController.__new__(AppController)
     controller._backend = MagicMock()
     controller._backend.transcribe = AsyncMock(return_value="")
-    controller._config = {"whisper": {"language": "zh"}}
+    controller._language = "zh"
     controller._llm_enabled = False
     controller._llm = None
     controller._last_transcription = "partial text"

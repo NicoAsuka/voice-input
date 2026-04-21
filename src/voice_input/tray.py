@@ -5,7 +5,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from PyQt6.QtGui import QAction, QActionGroup, QIcon
-from PyQt6.QtWidgets import QMenu, QSystemTrayIcon, QApplication
+from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QWidget
@@ -21,10 +21,15 @@ LANGUAGES = {
 }
 
 STT_BACKENDS = {
-    "local": "Local (faster-whisper)",
+    "local": "Local",
     "openai": "OpenAI Whisper API",
     "google": "Google Speech-to-Text",
     "volcengine": "字节火山语音识别",
+}
+
+ENGINES = {
+    "whisper": "faster-whisper",
+    "sensevoice": "SenseVoice Small",
 }
 
 
@@ -43,7 +48,7 @@ class TrayManager(QSystemTrayIcon):
 
         # Icons from Breeze theme
         self._icon_idle = QIcon.fromTheme("audio-input-microphone")
-        self._icon_recording = QIcon.fromTheme("audio-input-microphone")  # overlay set below
+        self._icon_recording = QIcon.fromTheme("audio-input-microphone")
         self._icon_muted = QIcon.fromTheme("audio-input-microphone-muted")
 
         self.setIcon(self._icon_idle)
@@ -100,6 +105,22 @@ class TrayManager(QSystemTrayIcon):
         stt_menu.addAction(self._stt_settings_action)
         menu.addMenu(stt_menu)
 
+        # Local Engine submenu. This setting only affects the local STT backend.
+        engine_menu = QMenu("Local Engine", menu)
+        self._engine_group = QActionGroup(engine_menu)
+        self._engine_group.setExclusive(True)
+        self._engine_actions: dict[str, QAction] = {}
+        for key, label in ENGINES.items():
+            action = QAction(label, engine_menu)
+            action.setCheckable(True)
+            action.setData(key)
+            if key == "whisper":
+                action.setChecked(True)
+            self._engine_group.addAction(action)
+            engine_menu.addAction(action)
+            self._engine_actions[key] = action
+        menu.addMenu(engine_menu)
+
         # LLM submenu
         llm_menu = QMenu("LLM Refinement", menu)
         self._llm_toggle = QAction("Enabled", llm_menu)
@@ -148,6 +169,10 @@ class TrayManager(QSystemTrayIcon):
         return self._stt_settings_action
 
     @property
+    def engine_group(self) -> QActionGroup:
+        return self._engine_group
+
+    @property
     def llm_toggle(self) -> QAction:
         return self._llm_toggle
 
@@ -190,6 +215,10 @@ class TrayManager(QSystemTrayIcon):
         self._current_backend = backend
         if backend in self._stt_actions:
             self._stt_actions[backend].setChecked(True)
+
+    def set_engine(self, engine: str) -> None:
+        if engine in self._engine_actions:
+            self._engine_actions[engine].setChecked(True)
 
     def set_llm_enabled(self, enabled: bool) -> None:
         self._llm_enabled = enabled

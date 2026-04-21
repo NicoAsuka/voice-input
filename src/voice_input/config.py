@@ -21,10 +21,24 @@ DEFAULT_CONFIG: dict = {
         "mode": "toggle",
         "key": "Meta+Space",
     },
-    "whisper": {
-        "model": "medium",
-        "language": "zh",
-        "device": "auto",
+    "stt": {
+        "backend": "local",
+        "local": {
+            "engine": "whisper",
+            "model": "medium",
+            "language": "zh",
+            "device": "auto",
+        },
+        "openai": {
+            "api_base": "https://api.openai.com/v1",
+            "model": "whisper-1",
+        },
+        "google": {
+            "credentials_path": "",
+        },
+        "volcengine": {
+            "app_id": "",
+        },
     },
     "llm": {
         "enabled": True,
@@ -40,19 +54,6 @@ DEFAULT_CONFIG: dict = {
     },
     "inject": {
         "paste_method": "ctrl_v",
-    },
-    "stt": {
-        "backend": "local",
-        "openai": {
-            "api_base": "https://api.openai.com/v1",
-            "model": "whisper-1",
-        },
-        "google": {
-            "credentials_path": "",
-        },
-        "volcengine": {
-            "app_id": "",
-        },
     },
 }
 

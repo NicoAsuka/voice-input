@@ -9,9 +9,11 @@ def test_default_config_has_required_sections():
     cfg = DEFAULT_CONFIG
     assert cfg["hotkey"]["mode"] == "toggle"
     assert cfg["hotkey"]["key"] == "Meta+Space"
-    assert cfg["whisper"]["model"] == "medium"
-    assert cfg["whisper"]["language"] == "zh"
-    assert cfg["whisper"]["device"] == "auto"
+    assert cfg["stt"]["backend"] == "local"
+    assert cfg["stt"]["local"]["engine"] == "whisper"
+    assert cfg["stt"]["local"]["model"] == "medium"
+    assert cfg["stt"]["local"]["language"] == "zh"
+    assert cfg["stt"]["local"]["device"] == "auto"
     assert cfg["llm"]["enabled"] is True
     assert cfg["llm"]["api_base"] == "https://api.openai.com/v1"
     assert cfg["llm"]["model"] == "gpt-4o-mini"
@@ -40,10 +42,10 @@ def test_load_config_creates_default_when_missing(tmp_path):
 def test_save_and_reload(tmp_path):
     config_dir = tmp_path / "config"
     cfg = load_config(config_dir=config_dir)
-    cfg["whisper"]["language"] = "en"
+    cfg["stt"]["local"]["language"] = "en"
     save_config(cfg, config_dir=config_dir)
     reloaded = load_config(config_dir=config_dir)
-    assert reloaded["whisper"]["language"] == "en"
+    assert reloaded["stt"]["local"]["language"] == "en"
 
 
 def test_load_config_merges_partial_file(tmp_path):
@@ -55,8 +57,22 @@ def test_load_config_merges_partial_file(tmp_path):
     # Overridden value
     assert cfg["hotkey"]["mode"] == "hold"
     # Default values still present
-    assert cfg["whisper"]["model"] == "medium"
+    assert cfg["stt"]["local"]["model"] == "medium"
     assert cfg["llm"]["enabled"] is True
+
+
+def test_default_config_has_stt_local():
+    assert "stt" in DEFAULT_CONFIG
+    assert "local" in DEFAULT_CONFIG["stt"]
+    local = DEFAULT_CONFIG["stt"]["local"]
+    assert local["engine"] == "whisper"
+    assert local["model"] == "medium"
+    assert local["language"] == "zh"
+    assert local["device"] == "auto"
+
+
+def test_default_config_no_whisper_section():
+    assert "whisper" not in DEFAULT_CONFIG
 
 
 def test_xdg_paths():

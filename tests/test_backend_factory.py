@@ -4,16 +4,21 @@ from unittest.mock import patch
 from voice_input.backends import create_backend
 from voice_input.backends.base import TranscriptionBackend
 from voice_input.backends.google_speech import GoogleSpeechBackend
-from voice_input.backends.local_whisper import LocalWhisperBackend
+from voice_input.backends.local import LocalBackend
 from voice_input.backends.openai_whisper import OpenAIWhisperBackend
 from voice_input.backends.volcengine_speech import VolcengineSpeechBackend
 
 
 def _make_config(backend: str = "local", **overrides) -> dict:
     cfg = {
-        "whisper": {"model": "tiny", "language": "zh", "device": "cpu"},
         "stt": {
             "backend": backend,
+            "local": {
+                "engine": "whisper",
+                "model": "tiny",
+                "language": "zh",
+                "device": "cpu",
+            },
             "openai": {"api_base": "https://api.openai.com/v1", "model": "whisper-1"},
             "google": {"credentials_path": ""},
             "volcengine": {"app_id": "test"},
@@ -25,7 +30,12 @@ def _make_config(backend: str = "local", **overrides) -> dict:
 
 def test_create_local_backend():
     backend = create_backend(_make_config("local"))
-    assert isinstance(backend, LocalWhisperBackend)
+    assert isinstance(backend, LocalBackend)
+
+
+def test_create_backend_default_is_local():
+    backend = create_backend({"stt": _make_config("local")["stt"]})
+    assert isinstance(backend, LocalBackend)
 
 
 def test_create_openai_backend():

@@ -6,7 +6,6 @@ import enum
 import logging
 import queue
 import sys
-from typing import TYPE_CHECKING
 
 import numpy as np
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
@@ -15,7 +14,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from voice_input.audio import AudioRecorder, compute_rms
 from voice_input.backends import create_backend
-from voice_input.config import AppConfig, load_config, save_config, xdg_config_dir
+from voice_input.config import AppConfig, load_config, save_config
 from voice_input.hotkey import HotkeyManager
 from voice_input.injector import TextInjector
 from voice_input.llm import LLMRefiner
@@ -69,12 +68,10 @@ class AppController(QObject):
             device=config["audio"]["device"],
             sample_rate=config["audio"]["sample_rate"],
         )
-        self._whisper = WhisperWorker(
-            whisper_queue=self._whisper_queue,
-            model_name=config["whisper"]["model"],
-            language=config["whisper"]["language"],
-            device=config["whisper"]["device"],
-        )
+        self._language = config.get("stt", {}).get("local", {}).get("language", "zh")
+        self._backend = create_backend(config)
+        self._backend_is_streaming = self._backend.is_streaming()
+        self._whisper = self._create_worker()
         self._hotkey = HotkeyManager(
             mode=config["hotkey"]["mode"],
             key=config["hotkey"]["key"],
@@ -87,11 +84,9 @@ class AppController(QObject):
         )
         self._tray = TrayManager()
         self._tray.set_backend(config.get("stt", {}).get("backend", "local"))
-
-        # STT backend. Streaming backends update text while recording; non-streaming
-        # backends receive the full audio buffer after recording stops.
-        self._backend = create_backend(config)
-        self._backend_is_streaming = self._backend.is_streaming()
+        self._tray.set_engine(
+            config.get("stt", {}).get("local", {}).get("engine", "whisper")
+        )
 
         # LLM (initialized lazily with API key)
         self._llm: LLMRefiner | None = None
@@ -105,21 +100,28 @@ class AppController(QObject):
         # Connect signals
         self._connect_signals()
 
+    def _create_worker(self) -> WhisperWorker:
+        worker = WhisperWorker(
+            whisper_queue=self._whisper_queue,
+            backend=self._backend,
+            language=self._language,
+        )
+        worker.transcription_updated.connect(self._on_transcription)
+        worker.error_occurred.connect(self._on_whisper_error)
+        return worker
+
     def _connect_signals(self) -> None:
         # Hotkey
         self._hotkey.recording_requested.connect(self._on_toggle_recording)
         self._hotkey.hold_started.connect(self._on_start_recording)
         self._hotkey.hold_stopped.connect(self._on_stop_recording)
 
-        # Whisper
-        self._whisper.transcription_updated.connect(self._on_transcription)
-        self._whisper.error_occurred.connect(self._on_whisper_error)
-
         # Tray
         self._tray.toggle_action.triggered.connect(self._on_toggle_recording)
         self._tray.lang_group.triggered.connect(self._on_language_changed)
         self._tray.stt_group.triggered.connect(self._on_backend_changed)
         self._tray.stt_settings_action.triggered.connect(self._on_open_settings)
+        self._tray.engine_group.triggered.connect(self._on_engine_changed)
         self._tray.llm_toggle.toggled.connect(self._on_llm_toggled)
         self._tray.llm_settings_action.triggered.connect(self._on_open_settings)
         self._tray.about_action.triggered.connect(self._on_about)
@@ -140,15 +142,9 @@ class AppController(QObject):
         if self._hotkey.mode == "hold":
             asyncio.create_task(self._hotkey.run_evdev_loop())
 
-        # Initialize STT backend
-        try:
-            await self._backend.initialize()
-        except Exception as e:
-            log.error("Backend initialization failed: %s", e)
-
-        # Pre-load whisper model in background (local streaming mode only)
-        if self._backend_is_streaming:
-            self._whisper.start()
+        # Start worker for both streaming and non-streaming backends. Streaming
+        # backends emit partial text; non-streaming backends only buffer audio.
+        self._whisper.start()
 
         # Initialize LLM if enabled
         self._init_llm()
@@ -163,6 +159,7 @@ class AppController(QObject):
             return
         try:
             import keyring
+
             api_key = keyring.get_password("voice-input", "llm-api-key")
         except Exception:
             api_key = None
@@ -175,7 +172,7 @@ class AppController(QObject):
 
     def _set_state(self, new_state: AppState) -> None:
         if not self._state.can_transition_to(new_state):
-            log.warning("Invalid transition: %s → %s", self._state, new_state)
+            log.warning("Invalid transition: %s -> %s", self._state, new_state)
             return
         self._state = new_state
         self.state_changed.emit(new_state.value)
@@ -249,12 +246,9 @@ class AppController(QObject):
     ) -> None:
         """Run final STT on the full audio buffer, then optionally refine and inject."""
         try:
-            text = await self._backend.transcribe(
-                audio_buffer,
-                self._config["whisper"]["language"],
-            )
+            text = await self._backend.transcribe(audio_buffer, self._language)
         except Exception as e:
-            log.error("Remote transcription failed: %s", e)
+            log.error("Transcription failed: %s", e)
             self._send_notification("Voice Input Error", f"STT API error: {e}")
             text = ""
 
@@ -281,10 +275,18 @@ class AppController(QObject):
             # Start injection after overlay finishes its exit animation,
             # otherwise ydotool's Ctrl+V may be sent to the overlay instead
             # of the target application.
-            def _do_inject():
+            def _do_inject() -> None:
                 import threading
-                threading.Thread(target=self._injector.inject, args=(text,), daemon=True).start()
-            self._overlay.animate_exit(on_finished=lambda: (self._overlay.hide(), _do_inject()))
+
+                threading.Thread(
+                    target=self._injector.inject,
+                    args=(text,),
+                    daemon=True,
+                ).start()
+
+            self._overlay.animate_exit(
+                on_finished=lambda: (self._overlay.hide(), _do_inject())
+            )
         else:
             self._overlay.animate_exit(on_finished=self._overlay.hide)
 
@@ -317,10 +319,23 @@ class AppController(QObject):
     @pyqtSlot(QAction)
     def _on_language_changed(self, action: QAction) -> None:
         code = action.data()
-        self._config["whisper"]["language"] = code
+        self._config["stt"]["local"]["language"] = code
+        self._language = code
         self._whisper.language = code
         save_config(self._config)
         log.info("Language changed to: %s", code)
+
+    def _restart_backend_worker(self) -> None:
+        old_backend = self._backend
+        if self._whisper.isRunning():
+            self._whisper.stop()
+            self._whisper.wait()
+
+        asyncio.ensure_future(old_backend.cleanup())
+        self._backend = create_backend(self._config)
+        self._backend_is_streaming = self._backend.is_streaming()
+        self._whisper = self._create_worker()
+        self._whisper.start()
 
     @pyqtSlot(QAction)
     def _on_backend_changed(self, action: QAction) -> None:
@@ -330,16 +345,22 @@ class AppController(QObject):
 
         self._config.setdefault("stt", {})["backend"] = backend_name
         save_config(self._config)
-
-        asyncio.ensure_future(self._backend.cleanup())
-        self._backend = create_backend(self._config)
-        self._backend_is_streaming = self._backend.is_streaming()
-        asyncio.ensure_future(self._backend.initialize())
-
-        if self._backend_is_streaming and not self._whisper.isRunning():
-            self._whisper.start()
-
+        self._restart_backend_worker()
         log.info("STT backend changed to: %s", backend_name)
+
+    @pyqtSlot(QAction)
+    def _on_engine_changed(self, action: QAction) -> None:
+        engine = action.data()
+        local_cfg = self._config.setdefault("stt", {}).setdefault("local", {})
+        if engine == local_cfg.get("engine"):
+            return
+
+        local_cfg["engine"] = engine
+        save_config(self._config)
+        log.info("Local engine changed to: %s", engine)
+
+        if self._config.get("stt", {}).get("backend", "local") == "local":
+            self._restart_backend_worker()
 
     @pyqtSlot(bool)
     def _on_llm_toggled(self, enabled: bool) -> None:
@@ -366,13 +387,14 @@ class AppController(QObject):
             "Voice Input for KDE Plasma 6\n"
             "Version 0.1.0\n\n"
             "Speech-to-text with system tray integration.\n"
-            "Powered by faster-whisper.",
+            "Powered by faster-whisper and SenseVoice.",
         )
 
     def _send_notification(self, title: str, body: str) -> None:
         """Send a desktop notification via org.freedesktop.Notifications."""
         try:
             import subprocess
+
             subprocess.run(
                 ["notify-send", title, body, "-a", "Voice Input"],
                 timeout=5,
@@ -397,6 +419,7 @@ def run_app() -> None:
 
     try:
         import qasync
+
         loop = qasync.QEventLoop(app)
         asyncio.set_event_loop(loop)
     except ImportError:
