@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 class AppState(enum.Enum):
     IDLE = "Idle"
     RECORDING = "Recording"
+    TRANSCRIBING = "Transcribing"
     REFINING = "Refining"
 
     _transitions = None  # placeholder, set below
@@ -39,7 +40,8 @@ class AppState(enum.Enum):
 
 _VALID_TRANSITIONS = {
     AppState.IDLE: {AppState.RECORDING},
-    AppState.RECORDING: {AppState.IDLE, AppState.REFINING},
+    AppState.RECORDING: {AppState.IDLE, AppState.TRANSCRIBING, AppState.REFINING},
+    AppState.TRANSCRIBING: {AppState.IDLE, AppState.REFINING},
     AppState.REFINING: {AppState.IDLE},
 }
 
