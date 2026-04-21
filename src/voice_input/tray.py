@@ -129,7 +129,7 @@ class TrayManager(QSystemTrayIcon):
         return self._about_action
 
     def set_state(self, state: str) -> None:
-        """Update tray state: 'Idle', 'Recording', 'Refining'."""
+        """Update tray state: 'Idle', 'Recording', 'Transcribing', 'Refining'."""
         self._state = state
         self._status_action.setText(f"Status: {state}")
         self.setToolTip(f"Voice Input — {state}")
@@ -137,7 +137,7 @@ class TrayManager(QSystemTrayIcon):
         if state == "Recording":
             self._toggle_action.setText("Stop Recording")
             self.setIcon(self._icon_recording)
-        elif state == "Refining":
+        elif state in ("Transcribing", "Refining"):
             self._toggle_action.setText("Stop Recording")
             self._toggle_action.setEnabled(False)
         else:

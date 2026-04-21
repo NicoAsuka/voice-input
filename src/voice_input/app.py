@@ -14,6 +14,7 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from voice_input.audio import AudioRecorder, compute_rms
+from voice_input.backends import create_backend
 from voice_input.config import AppConfig, load_config, save_config, xdg_config_dir
 from voice_input.hotkey import HotkeyManager
 from voice_input.injector import TextInjector
@@ -68,11 +69,12 @@ class AppController(QObject):
             device=config["audio"]["device"],
             sample_rate=config["audio"]["sample_rate"],
         )
+        self._backend = create_backend(config)
+        self._language = config.get("stt", {}).get("local", {}).get("language", "zh")
         self._whisper = WhisperWorker(
             whisper_queue=self._whisper_queue,
-            model_name=config["whisper"]["model"],
-            language=config["whisper"]["language"],
-            device=config["whisper"]["device"],
+            backend=self._backend,
+            language=self._language,
         )
         self._hotkey = HotkeyManager(
             mode=config["hotkey"]["mode"],
@@ -177,6 +179,7 @@ class AppController(QObject):
         self._last_transcription = ""
         self._audio.start()
         self._viz_timer.start()
+        self._whisper.set_active(True)
         self._overlay.update_text("")
         self._overlay.show()
         self._set_state(AppState.RECORDING)
@@ -187,14 +190,36 @@ class AppController(QObject):
             return
         self._audio.stop()
         self._viz_timer.stop()
-        self._whisper.stop()
+        self._whisper.set_active(False)
 
-        text = self._last_transcription
+        if self._backend.is_streaming():
+            text = self._last_transcription
+            self._finish_transcription(text)
+        else:
+            buffer = self._whisper.get_buffer()
+            if len(buffer) < 1600:
+                self._overlay.animate_exit(on_finished=self._overlay.hide)
+                self._set_state(AppState.IDLE)
+                return
+            self._set_state(AppState.TRANSCRIBING)
+            self._overlay.update_text("识别中...")
+            asyncio.ensure_future(self._transcribe_and_finish(buffer))
+
+    async def _transcribe_and_finish(self, buffer: np.ndarray) -> None:
+        try:
+            text = await self._backend.transcribe(buffer, self._language)
+            self._finish_transcription(text)
+        except Exception as e:
+            log.error("Transcription failed: %s", e)
+            self._overlay.animate_exit(on_finished=self._overlay.hide)
+            self._set_state(AppState.IDLE)
+            self._send_notification("Voice Input Error", f"转写失败: {e}")
+
+    def _finish_transcription(self, text: str) -> None:
         if not text:
             self._overlay.animate_exit(on_finished=self._overlay.hide)
             self._set_state(AppState.IDLE)
             return
-
         if self._llm_enabled and self._llm is not None:
             self._set_state(AppState.REFINING)
             self._overlay.update_text("Refining...")
@@ -241,7 +266,8 @@ class AppController(QObject):
     @pyqtSlot(QAction)
     def _on_language_changed(self, action: QAction) -> None:
         code = action.data()
-        self._config["whisper"]["language"] = code
+        self._config["stt"]["local"]["language"] = code
+        self._language = code
         self._whisper.language = code
         save_config(self._config)
         log.info("Language changed to: %s", code)
