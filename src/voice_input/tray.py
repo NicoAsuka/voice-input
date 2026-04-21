@@ -20,6 +20,11 @@ LANGUAGES = {
     "ko": "한국어",
 }
 
+ENGINES = {
+    "whisper": "faster-whisper",
+    "sensevoice": "SenseVoice Small",
+}
+
 
 class TrayManager(QSystemTrayIcon):
     """System tray icon using StatusNotifierItem (via Qt6 on KDE).
@@ -73,6 +78,22 @@ class TrayManager(QSystemTrayIcon):
             self._lang_actions[code] = action
         menu.addMenu(lang_menu)
 
+        # Engine submenu
+        engine_menu = QMenu("Local Engine", menu)
+        self._engine_group = QActionGroup(engine_menu)
+        self._engine_group.setExclusive(True)
+        self._engine_actions: dict[str, QAction] = {}
+        for key, label in ENGINES.items():
+            action = QAction(label, engine_menu)
+            action.setCheckable(True)
+            action.setData(key)
+            if key == "whisper":
+                action.setChecked(True)
+            self._engine_group.addAction(action)
+            engine_menu.addAction(action)
+            self._engine_actions[key] = action
+        menu.addMenu(engine_menu)
+
         # LLM submenu
         llm_menu = QMenu("LLM Refinement", menu)
         self._llm_toggle = QAction("Enabled", llm_menu)
@@ -113,6 +134,10 @@ class TrayManager(QSystemTrayIcon):
         return self._lang_group
 
     @property
+    def engine_group(self) -> QActionGroup:
+        return self._engine_group
+
+    @property
     def llm_toggle(self) -> QAction:
         return self._llm_toggle
 
@@ -149,6 +174,10 @@ class TrayManager(QSystemTrayIcon):
         self._current_language = code
         if code in self._lang_actions:
             self._lang_actions[code].setChecked(True)
+
+    def set_engine(self, engine: str) -> None:
+        if engine in self._engine_actions:
+            self._engine_actions[engine].setChecked(True)
 
     def set_llm_enabled(self, enabled: bool) -> None:
         self._llm_enabled = enabled

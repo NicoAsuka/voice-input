@@ -111,6 +111,7 @@ class AppController(QObject):
         # Tray
         self._tray.toggle_action.triggered.connect(self._on_toggle_recording)
         self._tray.lang_group.triggered.connect(self._on_language_changed)
+        self._tray.engine_group.triggered.connect(self._on_engine_changed)
         self._tray.llm_toggle.toggled.connect(self._on_llm_toggled)
         self._tray.llm_settings_action.triggered.connect(self._on_open_settings)
         self._tray.about_action.triggered.connect(self._on_about)
@@ -121,6 +122,9 @@ class AppController(QObject):
     async def start(self) -> None:
         """Initialize and start the app."""
         self._tray.show()
+        self._tray.set_engine(
+            self._config.get("stt", {}).get("local", {}).get("engine", "whisper")
+        )
 
         # Register hotkey
         ok = await self._hotkey.register()
@@ -271,6 +275,27 @@ class AppController(QObject):
         self._whisper.language = code
         save_config(self._config)
         log.info("Language changed to: %s", code)
+
+    @pyqtSlot(QAction)
+    def _on_engine_changed(self, action: QAction) -> None:
+        engine = action.data()
+        if engine == self._config["stt"]["local"]["engine"]:
+            return
+        self._config["stt"]["local"]["engine"] = engine
+        save_config(self._config)
+        log.info("Engine changed to: %s", engine)
+
+        self._backend = create_backend(self._config)
+        self._whisper.stop()
+        self._whisper.wait()
+        self._whisper = WhisperWorker(
+            whisper_queue=self._whisper_queue,
+            backend=self._backend,
+            language=self._language,
+        )
+        self._whisper.transcription_updated.connect(self._on_transcription)
+        self._whisper.error_occurred.connect(self._on_whisper_error)
+        self._whisper.start()
 
     @pyqtSlot(bool)
     def _on_llm_toggled(self, enabled: bool) -> None:
