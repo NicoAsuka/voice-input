@@ -29,17 +29,17 @@ class VadTrimmer:
             log.warning("sherpa_onnx not installed; VAD disabled")
             return
 
-        config = sherpa_onnx.VadModelConfig(
-            silero_vad=sherpa_onnx.SileroVadModelConfig(
-                model=str(model_path),
-                threshold=0.5,
-                min_silence_duration=0.25,
-                min_speech_duration=0.25,
-                window_size=512,
-            ),
-            sample_rate=sample_rate,
-        )
         try:
+            config = sherpa_onnx.VadModelConfig(
+                silero_vad=sherpa_onnx.SileroVadModelConfig(
+                    model=str(model_path),
+                    threshold=0.5,
+                    min_silence_duration=0.25,
+                    min_speech_duration=0.25,
+                    window_size=512,
+                ),
+                sample_rate=sample_rate,
+            )
             self._vad = sherpa_onnx.VoiceActivityDetector(
                 config, buffer_size_in_seconds=30
             )

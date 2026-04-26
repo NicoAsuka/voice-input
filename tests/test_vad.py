@@ -31,6 +31,17 @@ def test_load_initializes_vad():
     fake_sherpa.VoiceActivityDetector.assert_called_once()
 
 
+def test_load_disables_vad_when_config_construction_fails(caplog):
+    vad = VadTrimmer()
+
+    with patch("voice_input.asr.vad.sherpa_onnx") as fake_sherpa:
+        fake_sherpa.SileroVadModelConfig.side_effect = RuntimeError("bad config")
+        vad.load(Path("/tmp/silero_vad.onnx"))
+
+    assert vad.available() is False
+    assert "Failed to load VAD: bad config" in caplog.text
+
+
 def test_trim_concatenates_speech_segments():
     vad = VadTrimmer()
     fake_vad = MagicMock()
