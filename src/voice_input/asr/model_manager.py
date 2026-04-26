@@ -81,6 +81,52 @@ VAD_META = ModelMeta(
 )
 
 
+async def _download_to_path(
+    client: httpx.AsyncClient, url: str, dest: Path, expected_sha256: str
+) -> None:
+    """下载到临时文件 -> SHA256 校验 -> 原子 rename。"""
+    log.info("Downloading %s -> %s", url, dest)
+    with tempfile.NamedTemporaryFile(delete=False, dir=dest.parent, suffix=".part") as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        async with client.stream("GET", url, follow_redirects=True) as resp:
+            resp.raise_for_status()
+            sha = hashlib.sha256()
+            with open(tmp_path, "wb") as f:
+                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                    f.write(chunk)
+                    sha.update(chunk)
+
+        if expected_sha256:
+            actual = sha.hexdigest()
+            if actual != expected_sha256:
+                raise RuntimeError(
+                    f"SHA256 mismatch for {url}: expected {expected_sha256}, got {actual}"
+                )
+        tmp_path.replace(dest)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+async def _download_meta_to_dir(meta: ModelMeta, target_dir: Path) -> dict[str, Path]:
+    """下载 meta 中所有文件到 target_dir。失败则清理。"""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    paths: dict[str, Path] = {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            for role, filename in meta.files.items():
+                url = meta.base_url + filename
+                dest = target_dir / filename
+                expected = meta.sha256.get(role, "")
+                await _download_to_path(client, url, dest, expected)
+                paths[role] = dest
+    except Exception:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise
+    return paths
+
+
 class ModelManager:
     """Sherpa-onnx 模型下载、校验、缓存管理。"""
 
@@ -89,3 +135,40 @@ class ModelManager:
 
     def _model_dir(self, model_id: str) -> Path:
         return self.base_dir / model_id
+
+    async def ensure_model(self, model_id: str) -> ModelInfo:
+        """已存在 -> 直接返回；不存在 -> 下载到 cache 目录。"""
+        if model_id not in REGISTRY:
+            raise KeyError(f"Unknown model_id: {model_id}")
+        meta = REGISTRY[model_id]
+        target_dir = self._model_dir(model_id)
+
+        existing_paths = {role: target_dir / fn for role, fn in meta.files.items()}
+        if all(p.exists() for p in existing_paths.values()):
+            log.debug("Model %s already installed", model_id)
+            return ModelInfo(
+                model_id=model_id,
+                family=meta.family,
+                paths=existing_paths,
+                language=meta.language,
+                size_bytes=meta.size_bytes,
+            )
+
+        log.info("Installing model %s into %s", model_id, target_dir)
+        paths = await _download_meta_to_dir(meta, target_dir)
+        return ModelInfo(
+            model_id=model_id,
+            family=meta.family,
+            paths=paths,
+            language=meta.language,
+            size_bytes=meta.size_bytes,
+        )
+
+    async def ensure_vad_model(self) -> Path:
+        """确保 silero_vad.onnx 存在，返回路径。"""
+        target_dir = self.base_dir / "silero-vad"
+        existing = target_dir / VAD_META.files["model"]
+        if existing.exists():
+            return existing
+        paths = await _download_meta_to_dir(VAD_META, target_dir)
+        return paths["model"]
