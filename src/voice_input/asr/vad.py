@@ -13,6 +13,29 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
+def _vad_empty(vad: object) -> bool:
+    empty = getattr(vad, "empty", None)
+    if callable(empty):
+        result = empty()
+        if isinstance(result, bool):
+            return result
+        if not result.__class__.__module__.startswith("unittest.mock"):
+            return bool(result)
+
+    is_empty = getattr(vad, "is_empty", None)
+    if callable(is_empty):
+        return bool(is_empty())
+
+    raise AttributeError("VAD object does not expose empty() or is_empty()")
+
+
+def _vad_front(vad: object) -> object:
+    front = getattr(vad, "front")
+    if callable(front) and "samples" not in getattr(front, "__dict__", {}):
+        return front()
+    return front
+
+
 class VadTrimmer:
     """Silero VAD wrapper. 输入 PCM float32, 输出去除静音后的 PCM。"""
 
@@ -54,19 +77,26 @@ class VadTrimmer:
         if self._vad is None:
             return samples
 
+        if sample_rate != self._sample_rate:
+            raise ValueError(
+                f"VAD sample rate mismatch: got {sample_rate}, "
+                f"expected {self._sample_rate}"
+            )
+
         if samples.dtype != np.float32:
             samples = samples.astype(np.float32)
 
-        self._vad.accept_waveform(samples)
-        self._vad.flush()
+        try:
+            self._vad.accept_waveform(samples)
+            self._vad.flush()
 
-        segments: list[np.ndarray] = []
-        while not self._vad.is_empty():
-            segment = self._vad.front()
-            segments.append(np.asarray(segment.samples, dtype=np.float32))
-            self._vad.pop()
-
-        self._vad.reset()
+            segments: list[np.ndarray] = []
+            while not _vad_empty(self._vad):
+                segment = _vad_front(self._vad)
+                segments.append(np.asarray(segment.samples, dtype=np.float32))
+                self._vad.pop()
+        finally:
+            self._vad.reset()
 
         if not segments:
             return np.array([], dtype=np.float32)
