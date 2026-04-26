@@ -11,7 +11,7 @@ class RecognitionError(Exception):
 
     def __init__(self, message: str, *, user_message: str | None = None) -> None:
         super().__init__(message)
-        self.user_message = user_message or "识别失败，请重试"
+        self.user_message = user_message if user_message is not None else "识别失败，请重试"
 
 
 @dataclass(frozen=True)

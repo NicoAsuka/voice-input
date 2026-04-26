@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from voice_input.backends.base import (
@@ -29,6 +31,13 @@ def test_backend_capabilities_defaults():
     assert caps.supports_vad is False
 
 
+def test_backend_capabilities_is_frozen():
+    caps = BackendCapabilities()
+
+    with pytest.raises(FrozenInstanceError):
+        caps.supports_streaming = True  # type: ignore[misc]
+
+
 def test_backend_descriptor_fields():
     desc = BackendDescriptor(
         backend_id="fake",
@@ -38,6 +47,13 @@ def test_backend_descriptor_fields():
     assert desc.backend_id == "fake"
     assert desc.model_id == "m1"
     assert desc.capabilities.supports_vad is True
+
+
+def test_backend_descriptor_is_frozen():
+    desc = BackendDescriptor(backend_id="fake", model_id="m1")
+
+    with pytest.raises(FrozenInstanceError):
+        desc.backend_id = "other"  # type: ignore[misc]
 
 
 def test_session_is_abstract():
