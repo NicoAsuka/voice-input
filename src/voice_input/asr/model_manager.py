@@ -5,7 +5,7 @@ import hashlib
 import logging
 import shutil
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -104,27 +104,47 @@ async def _download_to_path(
                     f"SHA256 mismatch for {url}: expected {expected_sha256}, got {actual}"
                 )
         tmp_path.replace(dest)
-    except Exception:
+    except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
 
 
+def _paths_for_meta(meta: ModelMeta, target_dir: Path) -> dict[str, Path]:
+    return {role: target_dir / filename for role, filename in meta.files.items()}
+
+
+def _meta_files_installed(meta: ModelMeta, target_dir: Path) -> bool:
+    return all(path.is_file() for path in _paths_for_meta(meta, target_dir).values())
+
+
 async def _download_meta_to_dir(meta: ModelMeta, target_dir: Path) -> dict[str, Path]:
-    """下载 meta 中所有文件到 target_dir。失败则清理。"""
-    target_dir.mkdir(parents=True, exist_ok=True)
-    paths: dict[str, Path] = {}
+    """下载 meta 中所有文件到 staging dir，成功后提升为 target_dir。"""
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f".{target_dir.name}.",
+            suffix=".tmp",
+            dir=target_dir.parent,
+        )
+    )
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
             for role, filename in meta.files.items():
                 url = meta.base_url + filename
-                dest = target_dir / filename
+                dest = staging_dir / filename
                 expected = meta.sha256.get(role, "")
                 await _download_to_path(client, url, dest, expected)
-                paths[role] = dest
-    except Exception:
-        shutil.rmtree(target_dir, ignore_errors=True)
+
+        if _meta_files_installed(meta, target_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return _paths_for_meta(meta, target_dir)
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+        staging_dir.replace(target_dir)
+    except BaseException:
+        shutil.rmtree(staging_dir, ignore_errors=True)
         raise
-    return paths
+    return _paths_for_meta(meta, target_dir)
 
 
 class ModelManager:
@@ -132,9 +152,17 @@ class ModelManager:
 
     def __init__(self, base_dir: Path | None = None) -> None:
         self.base_dir = base_dir or (xdg_cache_dir() / "sherpa-models")
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def _model_dir(self, model_id: str) -> Path:
         return self.base_dir / model_id
+
+    def _lock_for(self, key: str) -> asyncio.Lock:
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
 
     async def ensure_model(self, model_id: str) -> ModelInfo:
         """已存在 -> 直接返回；不存在 -> 下载到 cache 目录。"""
@@ -143,17 +171,23 @@ class ModelManager:
         meta = REGISTRY[model_id]
         target_dir = self._model_dir(model_id)
 
-        existing_paths = {role: target_dir / fn for role, fn in meta.files.items()}
-        if all(p.exists() for p in existing_paths.values()):
-            log.debug("Model %s already installed", model_id)
-            return ModelInfo(
-                model_id=model_id,
-                family=meta.family,
-                paths=existing_paths,
-                language=meta.language,
-                size_bytes=meta.size_bytes,
-            )
+        async with self._lock_for(model_id):
+            existing_paths = _paths_for_meta(meta, target_dir)
+            if _meta_files_installed(meta, target_dir):
+                log.debug("Model %s already installed", model_id)
+                return ModelInfo(
+                    model_id=model_id,
+                    family=meta.family,
+                    paths=existing_paths,
+                    language=meta.language,
+                    size_bytes=meta.size_bytes,
+                )
 
+            return await self._install_model(model_id, meta, target_dir)
+
+    async def _install_model(
+        self, model_id: str, meta: ModelMeta, target_dir: Path
+    ) -> ModelInfo:
         log.info("Installing model %s into %s", model_id, target_dir)
         paths = await _download_meta_to_dir(meta, target_dir)
         return ModelInfo(
@@ -168,7 +202,8 @@ class ModelManager:
         """确保 silero_vad.onnx 存在，返回路径。"""
         target_dir = self.base_dir / "silero-vad"
         existing = target_dir / VAD_META.files["model"]
-        if existing.exists():
-            return existing
-        paths = await _download_meta_to_dir(VAD_META, target_dir)
-        return paths["model"]
+        async with self._lock_for("silero-vad"):
+            if existing.is_file():
+                return existing
+            paths = await _download_meta_to_dir(VAD_META, target_dir)
+            return paths["model"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 
@@ -75,6 +76,24 @@ def fake_paraformer_meta(monkeypatch):
     return test_meta, model_bytes, tokens_bytes
 
 
+@pytest.fixture
+def fake_vad_meta(monkeypatch):
+    """注入测试用 VAD 元数据，避免依赖真实远程文件。"""
+    from voice_input.asr import model_manager
+
+    vad_bytes = b"fake-vad-bytes"
+    test_meta = model_manager.ModelMeta(
+        family="vad",
+        base_url="https://example.com/test-vad/",
+        files={"model": "silero_vad.onnx"},
+        sha256={"model": _sha256(vad_bytes)},
+        language="any",
+        size_bytes=len(vad_bytes),
+    )
+    monkeypatch.setattr(model_manager, "VAD_META", test_meta)
+    return test_meta, vad_bytes
+
+
 @pytest.mark.asyncio
 async def test_ensure_model_downloads_when_missing(tmp_path, fake_paraformer_meta):
     meta, model_bytes, tokens_bytes = fake_paraformer_meta
@@ -93,6 +112,29 @@ async def test_ensure_model_downloads_when_missing(tmp_path, fake_paraformer_met
     assert info.family == "paraformer"
     assert info.paths["model"].exists()
     assert info.paths["tokens"].exists()
+    assert info.paths["model"].read_bytes() == model_bytes
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_directory_is_not_installed_file(
+    tmp_path, fake_paraformer_meta
+):
+    meta, model_bytes, tokens_bytes = fake_paraformer_meta
+    mgr = ModelManager(base_dir=tmp_path)
+    model_dir = tmp_path / "test-model"
+    (model_dir / "model.onnx").mkdir(parents=True)
+    (model_dir / "tokens.txt").write_bytes(tokens_bytes)
+
+    with respx.mock:
+        respx.get("https://example.com/test-model/model.onnx").mock(
+            return_value=Response(200, content=model_bytes)
+        )
+        respx.get("https://example.com/test-model/tokens.txt").mock(
+            return_value=Response(200, content=tokens_bytes)
+        )
+        info = await mgr.ensure_model("test-model")
+
+    assert info.paths["model"].is_file()
     assert info.paths["model"].read_bytes() == model_bytes
 
 
@@ -157,3 +199,76 @@ async def test_ensure_model_atomic_rename(tmp_path, fake_paraformer_meta, monkey
 
     # 失败后整个 model_dir 不应存在
     assert not (tmp_path / "test-model").exists()
+
+
+@pytest.mark.asyncio
+async def test_ensure_vad_model_downloads_when_missing(tmp_path, fake_vad_meta):
+    meta, vad_bytes = fake_vad_meta
+    mgr = ModelManager(base_dir=tmp_path)
+
+    with respx.mock:
+        respx.get("https://example.com/test-vad/silero_vad.onnx").mock(
+            return_value=Response(200, content=vad_bytes)
+        )
+        path = await mgr.ensure_vad_model()
+
+    assert path == tmp_path / "silero-vad" / "silero_vad.onnx"
+    assert path.read_bytes() == vad_bytes
+
+
+@pytest.mark.asyncio
+async def test_ensure_vad_model_skips_when_already_installed(tmp_path, fake_vad_meta):
+    meta, vad_bytes = fake_vad_meta
+    mgr = ModelManager(base_dir=tmp_path)
+    vad_dir = tmp_path / "silero-vad"
+    vad_dir.mkdir()
+    existing = vad_dir / "silero_vad.onnx"
+    existing.write_bytes(vad_bytes)
+
+    with respx.mock:
+        path = await mgr.ensure_vad_model()
+
+    assert path == existing
+    assert path.read_bytes() == vad_bytes
+
+
+@pytest.mark.asyncio
+async def test_download_failure_preserves_existing_installed_model(
+    tmp_path, fake_paraformer_meta
+):
+    meta, model_bytes, tokens_bytes = fake_paraformer_meta
+    mgr = ModelManager(base_dir=tmp_path)
+    model_dir = tmp_path / "test-model"
+    model_dir.mkdir()
+    (model_dir / "model.onnx").write_bytes(model_bytes)
+    (model_dir / "tokens.txt").write_bytes(tokens_bytes)
+
+    with respx.mock:
+        respx.get("https://example.com/test-model/model.onnx").mock(
+            return_value=Response(200, content=b"corrupted-bytes")
+        )
+        with pytest.raises(RuntimeError, match="SHA256 mismatch"):
+            await mgr._install_model("test-model", meta, model_dir)
+
+    assert (model_dir / "model.onnx").read_bytes() == model_bytes
+    assert (model_dir / "tokens.txt").read_bytes() == tokens_bytes
+
+
+@pytest.mark.asyncio
+async def test_download_cancellation_cleans_staging_dir(
+    tmp_path, fake_paraformer_meta, monkeypatch
+):
+    meta, model_bytes, tokens_bytes = fake_paraformer_meta
+    from voice_input.asr import model_manager
+
+    async def cancel_download(client, url, dest, expected_sha256):
+        (dest.parent / "leftover.part").write_bytes(b"partial")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(model_manager, "_download_to_path", cancel_download)
+
+    with pytest.raises(asyncio.CancelledError):
+        await model_manager._download_meta_to_dir(meta, tmp_path / "test-model")
+
+    assert not (tmp_path / "test-model").exists()
+    assert list(tmp_path.iterdir()) == []
