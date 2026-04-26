@@ -272,3 +272,39 @@ async def test_download_cancellation_cleans_staging_dir(
 
     assert not (tmp_path / "test-model").exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_list_installed_returns_summaries(tmp_path, fake_paraformer_meta):
+    meta, model_bytes, tokens_bytes = fake_paraformer_meta
+    mgr = ModelManager(base_dir=tmp_path)
+    model_dir = tmp_path / "test-model"
+    model_dir.mkdir()
+    (model_dir / "model.onnx").write_bytes(model_bytes)
+    (model_dir / "tokens.txt").write_bytes(tokens_bytes)
+
+    summaries = mgr.list_installed()
+    by_id = {s.model_id: s for s in summaries}
+    assert "test-model" in by_id
+    assert by_id["test-model"].installed is True
+    assert by_id["test-model"].family == "paraformer"
+    # 未安装的也列出来，标记 installed=False
+    assert "sherpa-onnx-paraformer-zh-2024-03-09" in by_id
+    assert by_id["sherpa-onnx-paraformer-zh-2024-03-09"].installed is False
+
+
+def test_remove_deletes_model_dir(tmp_path, fake_paraformer_meta):
+    meta, model_bytes, tokens_bytes = fake_paraformer_meta
+    mgr = ModelManager(base_dir=tmp_path)
+    model_dir = tmp_path / "test-model"
+    model_dir.mkdir()
+    (model_dir / "model.onnx").write_bytes(model_bytes)
+
+    mgr.remove("test-model")
+
+    assert not model_dir.exists()
+
+
+def test_remove_unknown_id_is_silent(tmp_path):
+    mgr = ModelManager(base_dir=tmp_path)
+    # 不抛错，只 log
+    mgr.remove("nonexistent")

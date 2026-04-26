@@ -164,6 +164,31 @@ class ModelManager:
             self._locks[key] = lock
         return lock
 
+    def list_installed(self) -> list[ModelSummary]:
+        """列出 REGISTRY 中所有模型，标记是否已安装。"""
+        results: list[ModelSummary] = []
+        for model_id, meta in REGISTRY.items():
+            target_dir = self._model_dir(model_id)
+            results.append(
+                ModelSummary(
+                    model_id=model_id,
+                    family=meta.family,
+                    language=meta.language,
+                    installed=_meta_files_installed(meta, target_dir),
+                    size_bytes=meta.size_bytes,
+                )
+            )
+        return results
+
+    def remove(self, model_id: str) -> None:
+        """删除模型目录。不存在时静默。"""
+        target_dir = self._model_dir(model_id)
+        if not target_dir.exists():
+            log.debug("remove: %s not found at %s", model_id, target_dir)
+            return
+        log.info("Removing model %s from %s", model_id, target_dir)
+        shutil.rmtree(target_dir, ignore_errors=True)
+
     async def ensure_model(self, model_id: str) -> ModelInfo:
         """已存在 -> 直接返回；不存在 -> 下载到 cache 目录。"""
         if model_id not in REGISTRY:
