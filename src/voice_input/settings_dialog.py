@@ -110,6 +110,9 @@ class SettingsDialog(QDialog):
         self._stt_volc_appid_edit = QLineEdit()
         self._stt_volc_appid_edit.setPlaceholderText("app-id")
         volc_form.addRow("App ID:", self._stt_volc_appid_edit)
+        self._stt_volc_resource_id_edit = QLineEdit()
+        self._stt_volc_resource_id_edit.setPlaceholderText("volc.bigasr.sauc.concurrent")
+        volc_form.addRow("Resource ID:", self._stt_volc_resource_id_edit)
         self._stt_volc_ak_edit = QLineEdit()
         self._stt_volc_ak_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._stt_volc_ak_edit.setPlaceholderText("access key")
@@ -154,6 +157,9 @@ class SettingsDialog(QDialog):
 
         volc_cfg = stt.get("volcengine", {})
         self._stt_volc_appid_edit.setText(volc_cfg.get("app_id", ""))
+        self._stt_volc_resource_id_edit.setText(
+            volc_cfg.get("resource_id", "volc.seedasr.sauc.duration")
+        )
         self._load_keyring_field(self._stt_volc_ak_edit, "stt-volcengine-access-key")
         self._load_keyring_field(self._stt_volc_sk_edit, "stt-volcengine-secret-key")
 
@@ -231,6 +237,10 @@ class SettingsDialog(QDialog):
 
         volc_cfg = stt.setdefault("volcengine", {})
         volc_cfg["app_id"] = self._stt_volc_appid_edit.text().strip()
+        volc_cfg["resource_id"] = (
+            self._stt_volc_resource_id_edit.text().strip()
+            or "volc.seedasr.sauc.duration"
+        )
         self._save_keyring_field(self._stt_volc_ak_edit, "stt-volcengine-access-key")
         self._save_keyring_field(self._stt_volc_sk_edit, "stt-volcengine-secret-key")
 

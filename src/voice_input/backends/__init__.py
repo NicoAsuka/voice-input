@@ -59,6 +59,7 @@ def create_backend(config: AppConfig) -> TranscriptionBackend:
             app_id=volc_cfg.get("app_id", ""),
             access_key=access_key,
             secret_key=secret_key,
+            resource_id=volc_cfg.get("resource_id", "volc.seedasr.sauc.duration"),
         )
 
     raise ValueError(f"Unknown STT backend: {backend_name}")

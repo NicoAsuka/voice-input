@@ -6,7 +6,7 @@ import logging
 import numpy as np
 
 from voice_input.backends.base import TranscriptionBackend
-from voice_input.backends.local.sensevoice_engine import SenseVoiceEngine
+from voice_input.backends.local.sensevoice_engine import DEFAULT_MODEL, SenseVoiceEngine
 from voice_input.backends.local.whisper_engine import WhisperEngine
 from voice_input.config import AppConfig, xdg_cache_dir
 
@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 # Minimum samples to attempt transcription (0.1s at 16kHz)
 MIN_SAMPLES = 1600
+WHISPER_MODEL_NAMES = {"tiny", "base", "small", "medium", "large-v3"}
 
 
 class LocalBackend(TranscriptionBackend):
@@ -32,15 +33,18 @@ class LocalBackend(TranscriptionBackend):
         return self._engine.is_streaming()
 
     async def initialize(self) -> None:
+        model_name = self._model_name
         if self._engine_name == "whisper":
             self._engine = WhisperEngine()
         elif self._engine_name == "sensevoice":
             self._engine = SenseVoiceEngine()
+            if not model_name or model_name in WHISPER_MODEL_NAMES:
+                model_name = DEFAULT_MODEL
         else:
             raise ValueError(f"Unknown local engine: {self._engine_name}")
 
         cache_dir = xdg_cache_dir() / "models"
-        self._engine.load_model(self._model_name, self._device, cache_dir)
+        self._engine.load_model(model_name, self._device, cache_dir)
 
     async def transcribe(self, audio_data: np.ndarray, language: str) -> str:
         if self._engine is None or len(audio_data) < MIN_SAMPLES:

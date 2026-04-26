@@ -61,6 +61,28 @@ def test_load_config_merges_partial_file(tmp_path):
     assert cfg["llm"]["enabled"] is True
 
 
+def test_load_config_migrates_legacy_whisper_section(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        "\n".join(
+            [
+                "[whisper]",
+                'model = "small"',
+                'language = "en"',
+                'device = "cpu"',
+                "",
+            ]
+        )
+    )
+
+    cfg = load_config(config_dir=config_dir)
+
+    assert cfg["stt"]["local"]["model"] == "small"
+    assert cfg["stt"]["local"]["language"] == "en"
+    assert cfg["stt"]["local"]["device"] == "cpu"
+
+
 def test_default_config_has_stt_local():
     assert "stt" in DEFAULT_CONFIG
     assert "local" in DEFAULT_CONFIG["stt"]

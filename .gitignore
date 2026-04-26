@@ -1,1 +1,12 @@
 .worktrees/
+__pycache__/
+*.pyc
+.codex
+.claude/
+*.txt
+.DS_Store
+.venv/
+venv/
+dist/
+build/
+*.egg-info/

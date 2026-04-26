@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import importlib.util
 import logging
 import queue
 import sys
@@ -71,6 +72,7 @@ class AppController(QObject):
         self._language = config.get("stt", {}).get("local", {}).get("language", "zh")
         self._backend = create_backend(config)
         self._backend_is_streaming = self._backend.is_streaming()
+        self._worker_ready = False
         self._whisper = self._create_worker()
         self._hotkey = HotkeyManager(
             mode=config["hotkey"]["mode"],
@@ -106,6 +108,7 @@ class AppController(QObject):
             backend=self._backend,
             language=self._language,
         )
+        worker.model_ready.connect(self._on_worker_ready)
         worker.transcription_updated.connect(self._on_transcription)
         worker.error_occurred.connect(self._on_whisper_error)
         return worker
@@ -303,6 +306,10 @@ class AppController(QObject):
         log.error("Whisper error: %s", msg)
         self._send_notification("Voice Input Error", msg)
 
+    @pyqtSlot()
+    def _on_worker_ready(self) -> None:
+        self._worker_ready = True
+
     def _update_visualization(self) -> None:
         """Drain viz queue and update overlay waveform."""
         chunks = []
@@ -325,28 +332,57 @@ class AppController(QObject):
         save_config(self._config)
         log.info("Language changed to: %s", code)
 
-    def _restart_backend_worker(self) -> None:
+    def _can_restart_backend_worker(self) -> bool:
+        if getattr(self, "_state", AppState.IDLE) != AppState.IDLE:
+            self._send_notification(
+                "Voice Input",
+                "Cannot switch STT backend while recording or transcribing.",
+            )
+            return False
+        if not getattr(self, "_worker_ready", False):
+            self._send_notification(
+                "Voice Input",
+                "STT backend is still starting. Try again after it is ready.",
+            )
+            return False
+        return True
+
+    def _restart_backend_worker(self) -> bool:
         old_backend = self._backend
         if self._whisper.isRunning():
             self._whisper.stop()
-            self._whisper.wait()
+            if not self._whisper.wait(2000):
+                self._send_notification(
+                    "Voice Input",
+                    "Timed out stopping current STT backend.",
+                )
+                return False
 
         asyncio.ensure_future(old_backend.cleanup())
         self._backend = create_backend(self._config)
         self._backend_is_streaming = self._backend.is_streaming()
+        self._worker_ready = False
         self._whisper = self._create_worker()
         self._whisper.start()
+        return True
 
     @pyqtSlot(QAction)
     def _on_backend_changed(self, action: QAction) -> None:
         backend_name = action.data()
         if backend_name == self._config.get("stt", {}).get("backend"):
             return
+        if not self._can_restart_backend_worker():
+            self._tray.set_backend(self._config.get("stt", {}).get("backend", "local"))
+            return
 
+        old_backend_name = self._config.get("stt", {}).get("backend", "local")
         self._config.setdefault("stt", {})["backend"] = backend_name
-        save_config(self._config)
-        self._restart_backend_worker()
-        log.info("STT backend changed to: %s", backend_name)
+        if self._restart_backend_worker():
+            save_config(self._config)
+            log.info("STT backend changed to: %s", backend_name)
+        else:
+            self._config.setdefault("stt", {})["backend"] = old_backend_name
+            self._tray.set_backend(old_backend_name)
 
     @pyqtSlot(QAction)
     def _on_engine_changed(self, action: QAction) -> None:
@@ -354,13 +390,38 @@ class AppController(QObject):
         local_cfg = self._config.setdefault("stt", {}).setdefault("local", {})
         if engine == local_cfg.get("engine"):
             return
+        if engine == "sensevoice" and importlib.util.find_spec("funasr") is None:
+            self._send_notification(
+                "Voice Input",
+                "SenseVoice requires funasr. Install voice-input[sensevoice] first.",
+            )
+            self._tray.set_engine(local_cfg.get("engine", "whisper"))
+            return
+        if not self._can_restart_backend_worker():
+            self._tray.set_engine(local_cfg.get("engine", "whisper"))
+            return
 
+        old_engine = local_cfg.get("engine", "whisper")
+        old_model = local_cfg.get("model", "")
         local_cfg["engine"] = engine
-        save_config(self._config)
-        log.info("Local engine changed to: %s", engine)
+        if engine == "sensevoice" and local_cfg.get("model") in {
+            "",
+            "tiny",
+            "base",
+            "small",
+            "medium",
+            "large-v3",
+        }:
+            local_cfg["model"] = "iic/SenseVoiceSmall"
 
         if self._config.get("stt", {}).get("backend", "local") == "local":
-            self._restart_backend_worker()
+            if not self._restart_backend_worker():
+                local_cfg["engine"] = old_engine
+                local_cfg["model"] = old_model
+                self._tray.set_engine(old_engine)
+                return
+        save_config(self._config)
+        log.info("Local engine changed to: %s", engine)
 
     @pyqtSlot(bool)
     def _on_llm_toggled(self, enabled: bool) -> None:

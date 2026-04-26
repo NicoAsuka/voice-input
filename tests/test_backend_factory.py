@@ -21,7 +21,7 @@ def _make_config(backend: str = "local", **overrides) -> dict:
             },
             "openai": {"api_base": "https://api.openai.com/v1", "model": "whisper-1"},
             "google": {"credentials_path": ""},
-            "volcengine": {"app_id": "test"},
+            "volcengine": {"app_id": "test", "resource_id": "volc.test.resource"},
         },
     }
     cfg.update(overrides)
@@ -53,6 +53,7 @@ def test_create_volcengine_backend():
     with patch("keyring.get_password", return_value="fake-key"):
         backend = create_backend(_make_config("volcengine"))
     assert isinstance(backend, VolcengineSpeechBackend)
+    assert backend.resource_id == "volc.test.resource"
 
 
 def test_create_unknown_backend_raises():

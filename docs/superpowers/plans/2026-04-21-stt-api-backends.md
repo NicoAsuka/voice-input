@@ -945,7 +945,6 @@ def create_backend(config: dict) -> TranscriptionBackend:
         whisper_cfg = config.get("whisper", {})
         return LocalWhisperBackend(
             model_name=whisper_cfg.get("model", "medium"),
-            language=whisper_cfg.get("language", "zh"),
             device=whisper_cfg.get("device", "auto"),
         )
 

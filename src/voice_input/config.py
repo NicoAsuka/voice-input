@@ -38,6 +38,7 @@ DEFAULT_CONFIG: dict = {
         },
         "volcengine": {
             "app_id": "",
+            "resource_id": "volc.seedasr.sauc.duration",
         },
     },
     "llm": {
@@ -122,6 +123,20 @@ def _to_toml(data: dict, prefix: str = "") -> str:
 AppConfig = dict  # type alias for clarity
 
 
+def _migrate_legacy_whisper_config(cfg: dict, user_cfg: dict) -> dict:
+    """Map old [whisper] config values to [stt.local] when not explicitly set."""
+    legacy = user_cfg.get("whisper")
+    if not isinstance(legacy, dict):
+        return cfg
+
+    user_local = user_cfg.get("stt", {}).get("local", {})
+    local_cfg = cfg.setdefault("stt", {}).setdefault("local", {})
+    for key in ("model", "language", "device"):
+        if key in legacy and key not in user_local:
+            local_cfg[key] = copy.deepcopy(legacy[key])
+    return cfg
+
+
 def load_config(config_dir: Path | None = None) -> AppConfig:
     config_dir = config_dir or xdg_config_dir()
     config_file = config_dir / "config.toml"
@@ -129,6 +144,7 @@ def load_config(config_dir: Path | None = None) -> AppConfig:
         with open(config_file, "rb") as f:
             user_cfg = tomllib.load(f)
         cfg = _deep_merge(DEFAULT_CONFIG, user_cfg)
+        cfg = _migrate_legacy_whisper_config(cfg, user_cfg)
     else:
         cfg = copy.deepcopy(DEFAULT_CONFIG)
         # Write defaults so the user has a template
