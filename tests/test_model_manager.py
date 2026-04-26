@@ -353,6 +353,48 @@ def test_remove_unknown_traversal_id_does_not_delete_outside_base(tmp_path):
     assert (outside_dir / "keep.txt").read_text() == "keep"
 
 
+def test_remove_known_id_symlink_to_base_does_not_delete_base_contents(
+    tmp_path, fake_paraformer_meta
+):
+    meta, model_bytes, tokens_bytes = fake_paraformer_meta
+    base_dir = tmp_path / "models"
+    base_dir.mkdir()
+    (base_dir / "keep.txt").write_text("keep")
+    (base_dir / "test-model").symlink_to(base_dir, target_is_directory=True)
+    mgr = ModelManager(base_dir=base_dir)
+
+    mgr.remove("test-model")
+
+    assert base_dir.exists()
+    assert (base_dir / "keep.txt").read_text() == "keep"
+    assert (base_dir / "test-model").is_symlink()
+
+
+def test_remove_registered_path_like_id_resolving_to_base_is_refused(
+    tmp_path, monkeypatch
+):
+    from voice_input.asr import model_manager
+
+    base_dir = tmp_path / "models"
+    base_dir.mkdir()
+    (base_dir / "keep.txt").write_text("keep")
+    meta = ModelMeta(
+        family="paraformer",
+        base_url="https://example.com/dot-model/",
+        files={"model": "model.onnx"},
+        sha256={"model": ""},
+        language="zh-en",
+        size_bytes=0,
+    )
+    monkeypatch.setitem(model_manager.REGISTRY, ".", meta)
+    mgr = ModelManager(base_dir=base_dir)
+
+    mgr.remove(".")
+
+    assert base_dir.exists()
+    assert (base_dir / "keep.txt").read_text() == "keep"
+
+
 def test_remove_known_id_propagates_rmtree_errors(
     tmp_path, fake_paraformer_meta, monkeypatch
 ):

@@ -186,9 +186,20 @@ class ModelManager:
             log.debug("remove: unknown model_id %s", model_id)
             return
 
-        base_dir = self.base_dir.resolve()
+        base_dir = self.base_dir.resolve(strict=False)
         target_dir = self._model_dir(model_id)
+        if target_dir.is_symlink():
+            log.warning(
+                "remove: refusing to remove symlink model path %s",
+                target_dir,
+            )
+            return
+
         target_resolved = target_dir.resolve(strict=False)
+        if target_resolved == base_dir:
+            log.warning("remove: refusing to remove base_dir %s", base_dir)
+            return
+
         try:
             target_resolved.relative_to(base_dir)
         except ValueError:
