@@ -181,13 +181,37 @@ class ModelManager:
         return results
 
     def remove(self, model_id: str) -> None:
-        """删除模型目录。不存在时静默。"""
-        target_dir = self._model_dir(model_id)
-        if not target_dir.exists():
-            log.debug("remove: %s not found at %s", model_id, target_dir)
+        """删除模型目录。不存在时静默；调用方需避免与下载并发执行。"""
+        if model_id not in REGISTRY:
+            log.debug("remove: unknown model_id %s", model_id)
             return
+
+        base_dir = self.base_dir.resolve()
+        target_dir = self._model_dir(model_id)
+        target_resolved = target_dir.resolve(strict=False)
+        try:
+            target_resolved.relative_to(base_dir)
+        except ValueError:
+            log.warning(
+                "remove: refusing to remove %s outside %s",
+                target_resolved,
+                base_dir,
+            )
+            return
+
+        if not target_resolved.exists():
+            log.debug("remove: %s not found at %s", model_id, target_resolved)
+            return
+
         log.info("Removing model %s from %s", model_id, target_dir)
-        shutil.rmtree(target_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(target_resolved)
+        except FileNotFoundError:
+            log.debug(
+                "remove: %s disappeared before removal at %s",
+                model_id,
+                target_resolved,
+            )
 
     async def ensure_model(self, model_id: str) -> ModelInfo:
         """已存在 -> 直接返回；不存在 -> 下载到 cache 目录。"""

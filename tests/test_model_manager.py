@@ -292,6 +292,35 @@ def test_list_installed_returns_summaries(tmp_path, fake_paraformer_meta):
     assert by_id["sherpa-onnx-paraformer-zh-2024-03-09"].installed is False
 
 
+def test_list_installed_marks_partial_install_false(tmp_path, fake_paraformer_meta):
+    meta, model_bytes, tokens_bytes = fake_paraformer_meta
+    mgr = ModelManager(base_dir=tmp_path)
+    model_dir = tmp_path / "test-model"
+    model_dir.mkdir()
+    (model_dir / "model.onnx").write_bytes(model_bytes)
+
+    summaries = mgr.list_installed()
+    by_id = {s.model_id: s for s in summaries}
+
+    assert by_id["test-model"].installed is False
+
+
+def test_list_installed_marks_directory_required_path_false(
+    tmp_path, fake_paraformer_meta
+):
+    meta, model_bytes, tokens_bytes = fake_paraformer_meta
+    mgr = ModelManager(base_dir=tmp_path)
+    model_dir = tmp_path / "test-model"
+    model_dir.mkdir()
+    (model_dir / "model.onnx").mkdir()
+    (model_dir / "tokens.txt").write_bytes(tokens_bytes)
+
+    summaries = mgr.list_installed()
+    by_id = {s.model_id: s for s in summaries}
+
+    assert by_id["test-model"].installed is False
+
+
 def test_remove_deletes_model_dir(tmp_path, fake_paraformer_meta):
     meta, model_bytes, tokens_bytes = fake_paraformer_meta
     mgr = ModelManager(base_dir=tmp_path)
@@ -308,3 +337,37 @@ def test_remove_unknown_id_is_silent(tmp_path):
     mgr = ModelManager(base_dir=tmp_path)
     # 不抛错，只 log
     mgr.remove("nonexistent")
+
+
+def test_remove_unknown_traversal_id_does_not_delete_outside_base(tmp_path):
+    base_dir = tmp_path / "models"
+    outside_dir = tmp_path / "other-dir"
+    base_dir.mkdir()
+    outside_dir.mkdir()
+    (outside_dir / "keep.txt").write_text("keep")
+    mgr = ModelManager(base_dir=base_dir)
+
+    mgr.remove("../other-dir")
+
+    assert outside_dir.exists()
+    assert (outside_dir / "keep.txt").read_text() == "keep"
+
+
+def test_remove_known_id_propagates_rmtree_errors(
+    tmp_path, fake_paraformer_meta, monkeypatch
+):
+    from voice_input.asr import model_manager
+
+    meta, model_bytes, tokens_bytes = fake_paraformer_meta
+    mgr = ModelManager(base_dir=tmp_path)
+    model_dir = tmp_path / "test-model"
+    model_dir.mkdir()
+
+    def fail_rmtree(path, ignore_errors=False):
+        assert ignore_errors is False
+        raise PermissionError("cannot remove")
+
+    monkeypatch.setattr(model_manager.shutil, "rmtree", fail_rmtree)
+
+    with pytest.raises(PermissionError, match="cannot remove"):
+        mgr.remove("test-model")
