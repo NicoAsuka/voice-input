@@ -249,7 +249,7 @@ class SettingsDialog(QDialog):
 
     def _on_test(self) -> None:
         """Test API connection."""
-        from voice_input.llm import LLMRefiner
+        from voice_input.postprocess.llm import LLMRefiner
 
         api_base = self._api_base_edit.text().strip() or "https://api.openai.com/v1"
         api_key = self._api_key_edit.text().strip()
