@@ -18,8 +18,8 @@ from voice_input.backends import create_backend
 from voice_input.config import AppConfig, load_config, save_config
 from voice_input.hotkey import HotkeyManager
 from voice_input.injector import TextInjector
-from voice_input.llm import LLMRefiner
 from voice_input.overlay import OverlayWidget
+from voice_input.postprocess.llm import LLMRefiner
 from voice_input.settings_dialog import SettingsDialog
 from voice_input.tray import TrayManager
 from voice_input.whisper_worker import WhisperWorker

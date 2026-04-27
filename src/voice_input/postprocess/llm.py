@@ -1,4 +1,3 @@
-# src/voice_input/llm.py
 from __future__ import annotations
 
 import logging
@@ -35,6 +34,7 @@ class LLMRefiner:
         self.api_base = api_base.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self._api_key = api_key
         self._client = httpx.AsyncClient(
             base_url=self.api_base,
             headers={
@@ -45,7 +45,10 @@ class LLMRefiner:
             trust_env=False,
         )
 
-    async def refine(self, text: str) -> str:
+    def is_configured(self) -> bool:
+        return bool(self._api_key)
+
+    async def refine(self, text: str, prompt: str = SYSTEM_PROMPT) -> str:
         """Send text for LLM correction. Returns corrected text, or original on failure."""
         if not text:
             return text
@@ -55,7 +58,7 @@ class LLMRefiner:
                 json={
                     "model": self.model,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": prompt},
                         {"role": "user", "content": text},
                     ],
                     "temperature": 0.0,
