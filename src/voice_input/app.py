@@ -428,7 +428,13 @@ class AppController(QObject):
         self._llm_enabled = enabled
         self._config["llm"]["enabled"] = enabled
         save_config(self._config)
-        if enabled and self._llm is None:
+        if not enabled:
+            if self._llm is not None:
+                asyncio.ensure_future(self._llm.close())
+                self._llm = None
+            return
+
+        if self._llm is None:
             self._init_llm()
 
     @pyqtSlot()

@@ -99,6 +99,25 @@ def test_engine_change_rejected_when_sensevoice_dependency_missing():
     controller._send_notification.assert_called_once()
 
 
+def test_llm_toggle_off_closes_existing_refiner():
+    controller = AppController.__new__(AppController)
+    controller._llm_enabled = True
+    refiner = MagicMock()
+    controller._llm = refiner
+    controller._config = {"llm": {"enabled": True}}
+
+    with patch("voice_input.app.save_config"), patch(
+        "voice_input.app.asyncio.ensure_future"
+    ) as ensure_future:
+        AppController._on_llm_toggled(controller, False)
+
+    assert controller._llm_enabled is False
+    assert controller._config["llm"]["enabled"] is False
+    assert controller._llm is None
+    refiner.close.assert_called_once()
+    ensure_future.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_final_transcription_uses_full_buffer_before_injecting():
     controller = AppController.__new__(AppController)
