@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import enum
 import hashlib
-import json
 import logging
+import json
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
-from voice_input.backends.base import BackendDescriptor, Session, TranscriptionBackend
 
 log = logging.getLogger(__name__)
 
@@ -22,7 +21,9 @@ class RegistryState(enum.Enum):
 
 def compute_signature(config: dict) -> str:
     """Compute a stable fingerprint for STT-relevant config only."""
-    stt = config.get("stt") or {}
+    if not isinstance(config, dict):
+        config = {}
+    stt = config.get("stt")
     if not isinstance(stt, dict):
         stt = {}
     relevant = {
@@ -41,19 +42,15 @@ StateListener = Callable[[RegistryState, str | None], None]
 
 @dataclass(slots=True)
 class _Effective:
-    backend: TranscriptionBackend
-    descriptor: BackendDescriptor
+    backend: Any
+    descriptor: Any
     signature: str
 
 
 class BackendRegistry:
-    """Manage STT backend lifecycle with background initialization."""
+    """Own the effective backend and reload it when STT config changes."""
 
-    def __init__(
-        self,
-        config: dict,
-        factory: Callable[[dict], TranscriptionBackend],
-    ) -> None:
+    def __init__(self, config: dict, factory: Callable[[dict], Any]) -> None:
         self._config = config
         self._factory = factory
         self._effective: _Effective | None = None
@@ -63,6 +60,9 @@ class BackendRegistry:
         self._listeners: list[StateListener] = []
         self._state = RegistryState.LOADING
         self._last_error: str | None = None
+        self._generation = 0
+        self._started = False
+        self._closed = False
 
     def state(self) -> RegistryState:
         return self._state
@@ -73,97 +73,169 @@ class BackendRegistry:
     def is_ready(self) -> bool:
         return self._effective is not None
 
-    def current_descriptor(self) -> BackendDescriptor | None:
-        if self._effective is None:
-            return None
-        return self._effective.descriptor
+    def current_descriptor(self) -> Any | None:
+        return self._effective.descriptor if self._effective else None
 
     def add_state_listener(self, callback: StateListener) -> None:
         self._listeners.append(callback)
 
-    def _set_state(self, state: RegistryState, error: str | None = None) -> None:
+    def _set_state(
+        self, state: RegistryState, error: str | None = None, *, force: bool = False
+    ) -> list[StateListener]:
+        if not force and self._state == state and self._last_error == error:
+            return []
         self._state = state
         self._last_error = error
-        for callback in list(self._listeners):
+        return list(self._listeners)
+
+    def _notify_listeners(
+        self, listeners: list[StateListener], state: RegistryState, error: str | None
+    ) -> None:
+        for listener in listeners:
             try:
-                callback(state, error)
+                listener(state, error)
             except Exception:
                 log.exception("state listener raised")
 
-    def create_session(self, language: str) -> Session:
+    def create_session(self, language: str) -> Any:
         if self._effective is None:
             raise RuntimeError("Backend is not ready")
         return self._effective.backend.create_session(language)
 
     async def start(self) -> None:
-        """Trigger initial backend load in the background."""
+        if self._started:
+            return
+        self._started = True
+        self._closed = False
         signature = compute_signature(self._config)
-        if self._reload_task is not None and not self._reload_task.done():
-            return
-
         self._target_signature = signature
-        self._set_state(RegistryState.LOADING)
+        self._generation += 1
+        generation = self._generation
+        listeners = self._set_state(RegistryState.LOADING, force=True)
         self._reload_task = asyncio.create_task(
-            self._reload_worker(self._config, signature)
+            self._reload_worker(self._config, signature, generation)
         )
+        if not self._closed and generation == self._generation:
+            self._notify_listeners(listeners, RegistryState.LOADING, None)
 
-    async def _reload_worker(self, config: dict, signature: str) -> None:
-        """Load a backend, then swap it in atomically on success."""
-        log.info("reload worker started for signature=%s", signature[:12])
-        new_backend: TranscriptionBackend | None = None
-        try:
-            new_backend = self._factory(config)
-            await new_backend.initialize()
-            descriptor = new_backend.describe()
-        except asyncio.CancelledError:
-            log.info("reload cancelled")
-            if new_backend is not None:
-                try:
-                    await new_backend.shutdown()
-                except Exception:
-                    log.exception("abandoned backend shutdown failed")
-            raise
-        except Exception as exc:
-            log.exception("backend initialize failed")
-            if new_backend is not None:
-                try:
-                    await new_backend.shutdown()
-                except Exception:
-                    log.exception("abandoned backend shutdown failed")
-            self._set_state(RegistryState.ERROR, error=str(exc))
+    async def synchronize(self, config: dict) -> None:
+        new_signature = compute_signature(config)
+        self._config = config
+        if new_signature == self._target_signature:
             return
+
+        previous_task = self._reload_task
+        if previous_task is not None and not previous_task.done():
+            previous_task.cancel()
 
         async with self._lock:
-            old = self._effective
-            self._effective = _Effective(
-                backend=new_backend,
-                descriptor=descriptor,
-                signature=signature,
+            self._target_signature = new_signature
+            self._generation += 1
+            generation = self._generation
+            state = (
+                RegistryState.RELOADING
+                if self._effective is not None
+                else RegistryState.LOADING
+            )
+            listeners = self._set_state(state)
+            self._reload_task = asyncio.create_task(
+                self._reload_worker(config, new_signature, generation)
             )
 
-        if old is not None:
-            try:
-                await old.backend.shutdown()
-            except Exception:
-                log.exception("old backend shutdown failed")
+        if not self._closed and generation == self._generation:
+            self._notify_listeners(listeners, state, None)
 
-        self._set_state(RegistryState.READY)
-        log.info("backend ready: %s", descriptor.model_id)
-
-    async def shutdown(self) -> None:
-        if self._reload_task is not None and not self._reload_task.done():
-            self._reload_task.cancel()
+        if previous_task is not None and previous_task is not self._reload_task:
             try:
-                await self._reload_task
+                await previous_task
             except asyncio.CancelledError:
                 pass
             except Exception:
-                pass
+                log.exception("previous reload task failed")
 
+    async def _reload_worker(
+        self, config: dict, signature: str, generation: int
+    ) -> None:
+        backend: Any | None = None
+        try:
+            log.info("reload worker started for signature=%s", signature[:12])
+            backend = self._factory(config)
+            await backend.initialize()
+            descriptor = backend.describe()
+        except asyncio.CancelledError:
+            if backend is not None:
+                try:
+                    await backend.shutdown()
+                except Exception:
+                    log.exception("cancelled backend shutdown failed")
+            raise
+        except Exception as exc:
+            if backend is not None:
+                try:
+                    await backend.shutdown()
+                except Exception:
+                    log.exception("failed backend shutdown during error cleanup")
+            if self._closed:
+                return
+            async with self._lock:
+                if self._closed or generation != self._generation:
+                    return
+                log.exception("backend initialize failed")
+                listeners = self._set_state(RegistryState.ERROR, error=str(exc))
+            if not self._closed and generation == self._generation:
+                self._notify_listeners(listeners, RegistryState.ERROR, str(exc))
+            return
+
+        if self._closed or generation != self._generation:
+            try:
+                await backend.shutdown()
+            except Exception:
+                log.exception("stale backend shutdown failed")
+            return
+
+        async with self._lock:
+            if self._closed or generation != self._generation:
+                try:
+                    await backend.shutdown()
+                except Exception:
+                    log.exception("stale backend shutdown failed")
+                return
+            previous = self._effective
+            self._effective = _Effective(
+                backend=backend,
+                descriptor=descriptor,
+                signature=signature,
+            )
+            listeners = self._set_state(RegistryState.READY)
+
+        if not self._closed and generation == self._generation:
+            self._notify_listeners(listeners, RegistryState.READY, None)
+
+        if previous is not None:
+            try:
+                await previous.backend.shutdown()
+            except Exception:
+                log.exception("old backend shutdown failed")
+
+        if self._reload_task is not None and self._reload_task.done():
+            self._reload_task = None
+
+    async def shutdown(self) -> None:
+        self._closed = True
+        self._generation += 1
+        task = self._reload_task
+        self._reload_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("reload task failed during shutdown")
         async with self._lock:
             effective = self._effective
             self._effective = None
-
         if effective is not None:
             try:
                 await effective.backend.shutdown()
