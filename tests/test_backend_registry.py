@@ -204,6 +204,33 @@ async def test_current_descriptor_returns_none_when_not_ready():
 
 
 @pytest.mark.asyncio
+async def test_synchronize_uses_config_snapshot():
+    backend1 = FakeBackend(model_id="m1")
+    backend2 = FakeBackend(model_id="m2")
+    seen: list[str] = []
+
+    def factory(config: dict) -> FakeBackend:
+        model_id = config["stt"]["sherpa"]["model_id"]
+        seen.append(model_id)
+        return {"m1": backend1, "m2": backend2}[model_id]
+
+    cfg1 = {"stt": {"backend": "fake", "sherpa": {"model_id": "m1"}}}
+    cfg2 = {"stt": {"backend": "fake", "sherpa": {"model_id": "m2"}}}
+    reg = BackendRegistry(cfg1, factory=factory)
+
+    await reg.start()
+    await asyncio.wait_for(backend1.initialize_finished.wait(), timeout=1)
+
+    await reg.synchronize(cfg2)
+    cfg2["stt"]["sherpa"]["model_id"] = "mutated"
+    await asyncio.wait_for(backend2.initialize_finished.wait(), timeout=1)
+
+    assert seen == ["m1", "m2"]
+    assert reg.current_descriptor().model_id == "m2"
+    await reg.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_synchronize_no_op_when_signature_unchanged():
     backend = FakeBackend(model_id="m1")
     cfg = {"stt": {"backend": "fake", "sherpa": {"model_id": "m1"}}}
