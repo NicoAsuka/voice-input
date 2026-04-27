@@ -44,7 +44,7 @@ def test_describe_returns_descriptor_with_model_id():
     desc = backend.describe()
     assert desc.backend_id == "sherpa"
     assert desc.model_id == "sherpa-onnx-paraformer-zh-2024-03-09"
-    assert desc.capabilities.supports_vad is True
+    assert desc.capabilities.supports_vad is False
     assert desc.capabilities.requires_network is False
 
 
@@ -67,6 +67,7 @@ async def test_initialize_loads_model_and_vad(tmp_path):
         await backend.initialize()
 
     assert backend.is_ready() is True
+    assert backend.describe().capabilities.supports_vad is True
     mgr_instance.ensure_model.assert_awaited_once()
     mgr_instance.ensure_vad_model.assert_awaited_once()
     vad_instance.load.assert_called_once()
@@ -88,6 +89,27 @@ async def test_initialize_skips_vad_when_disabled(tmp_path):
 
     VT.assert_not_called()
     mgr_instance.ensure_vad_model.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_initialize_continues_when_vad_model_missing(tmp_path):
+    backend = SherpaBackend(make_config(vad=True))
+    info = make_model_info(tmp_path)
+
+    with patch("voice_input.backends.sherpa_backend.ModelManager") as MM, patch(
+        "voice_input.backends.sherpa_backend.VadTrimmer"
+    ) as VT, patch("voice_input.backends.sherpa_backend.sherpa_onnx") as SO:
+        mgr_instance = MM.return_value
+        mgr_instance.ensure_model = AsyncMock(return_value=info)
+        mgr_instance.ensure_vad_model = AsyncMock(side_effect=RuntimeError("vad missing"))
+        SO.OfflineRecognizer.from_paraformer.return_value = MagicMock()
+
+        await backend.initialize()
+
+    assert backend.is_ready() is True
+    assert backend._vad is None
+    assert backend.describe().capabilities.supports_vad is False
+    VT.return_value.load.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -116,6 +138,37 @@ async def test_session_finish_returns_text():
     session.push_audio(pcm)
     text = await session.finish()
     assert text == "你好世界"
+    fake_recognizer.create_stream.assert_called_once_with(language="zh")
+
+
+@pytest.mark.asyncio
+async def test_session_finish_is_one_shot():
+    fake_recognizer = MagicMock()
+    fake_stream = MagicMock()
+    fake_stream.result.text = "hello"
+    fake_recognizer.create_stream.return_value = fake_stream
+
+    session = SherpaSession(recognizer=fake_recognizer, vad=None, language="en")
+    pcm = np.ones(16000, dtype=np.int16)
+    session.push_audio(pcm)
+
+    first = await session.finish()
+    second = await session.finish()
+
+    assert first == "hello"
+    assert second == ""
+    fake_recognizer.create_stream.assert_called_once_with(language="en")
+
+
+@pytest.mark.asyncio
+async def test_empty_finish_is_terminal():
+    fake_recognizer = MagicMock()
+    session = SherpaSession(recognizer=fake_recognizer, vad=None, language="en")
+
+    assert await session.finish() == ""
+    session.push_audio(np.ones(16000, dtype=np.int16))
+    assert await session.finish() == ""
+    fake_recognizer.create_stream.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -137,6 +190,8 @@ async def test_session_finish_raises_recognition_error_on_failure():
     with pytest.raises(RecognitionError) as exc_info:
         await session.finish()
     assert "识别" in exc_info.value.user_message
+    assert session._finished is True
+    assert session._buffer == []
 
 
 @pytest.mark.asyncio

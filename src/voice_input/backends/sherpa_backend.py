@@ -59,40 +59,51 @@ class SherpaSession(Session):
         self._language = language
         self._buffer: list[np.ndarray] = []
         self._cancelled = False
+        self._finished = False
 
     def push_audio(self, pcm_int16: np.ndarray) -> None:
-        if self._cancelled:
+        if self._cancelled or self._finished:
             return
         self._buffer.append(pcm_int16)
 
     def cancel(self) -> None:
         self._cancelled = True
         self._buffer.clear()
+        self._finished = True
 
     async def finish(self) -> str:
-        if self._cancelled or not self._buffer:
+        if self._cancelled or self._finished:
+            return ""
+        if not self._buffer:
+            self._finished = True
             return ""
 
         pcm = np.concatenate(self._buffer)
         audio_f32 = pcm.astype(np.float32) / 32768.0
+        self._finished = True
 
-        if self._vad is not None and self._vad.available():
-            audio_f32 = self._vad.trim(audio_f32, sample_rate=16000)
-            if len(audio_f32) == 0:
-                return ""
-
-        loop = asyncio.get_running_loop()
         try:
+            if self._vad is not None and self._vad.available():
+                audio_f32 = self._vad.trim(audio_f32, sample_rate=16000)
+                if len(audio_f32) == 0:
+                    return ""
+
+            loop = asyncio.get_running_loop()
             text = await loop.run_in_executor(None, self._recognize_sync, audio_f32)
         except Exception as e:
             log.exception("sherpa inference failed")
             raise RecognitionError(
                 str(e), user_message="识别引擎错误，请检查模型"
             ) from e
+        finally:
+            self._buffer.clear()
         return text.strip()
 
     def _recognize_sync(self, audio_f32: np.ndarray) -> str:
-        stream = self._recognizer.create_stream()
+        try:
+            stream = self._recognizer.create_stream(language=self._language)
+        except TypeError:
+            stream = self._recognizer.create_stream()
         stream.accept_waveform(16000, audio_f32)
         self._recognizer.decode_stream(stream)
         return stream.result.text
@@ -123,7 +134,7 @@ class SherpaBackend(TranscriptionBackend):
             capabilities=BackendCapabilities(
                 supports_streaming=False,
                 requires_network=False,
-                supports_vad=self._vad_enabled,
+                supports_vad=self._vad is not None,
             ),
         )
 
@@ -142,14 +153,19 @@ class SherpaBackend(TranscriptionBackend):
 
         if self._vad_enabled:
             vad = VadTrimmer()
-            vad_path = await manager.ensure_vad_model()
-            await loop.run_in_executor(None, vad.load, vad_path)
-            self._vad = vad
+            try:
+                vad_path = await manager.ensure_vad_model()
+                await loop.run_in_executor(None, vad.load, vad_path)
+                self._vad = vad
+            except Exception as e:
+                log.warning("VAD unavailable, continuing without it: %s", e)
+                self._vad = None
 
+        self._vad_enabled = self._vad is not None
         log.info(
             "SherpaBackend initialized with model=%s vad=%s",
             self._model_id,
-            self._vad_enabled,
+            self._vad is not None,
         )
 
     def create_session(self, language: str) -> Session:
