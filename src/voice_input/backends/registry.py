@@ -125,6 +125,11 @@ class BackendRegistry:
             raise
         except Exception as exc:
             log.exception("backend initialize failed")
+            if new_backend is not None:
+                try:
+                    await new_backend.shutdown()
+                except Exception:
+                    log.exception("abandoned backend shutdown failed")
             self._set_state(RegistryState.ERROR, error=str(exc))
             return
 

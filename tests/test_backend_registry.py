@@ -43,10 +43,12 @@ class FakeBackend(TranscriptionBackend):
         *,
         init_delay: float = 0.0,
         fail_init: bool = False,
+        fail_describe: bool = False,
         model_id: str = "m",
     ) -> None:
         self._init_delay = init_delay
         self._fail_init = fail_init
+        self._fail_describe = fail_describe
         self._model_id = model_id
         self._ready = False
         self.shutdown_called = False
@@ -61,6 +63,8 @@ class FakeBackend(TranscriptionBackend):
         self._ready = True
 
     def describe(self) -> BackendDescriptor:
+        if self._fail_describe:
+            raise RuntimeError("describe boom")
         return BackendDescriptor(
             backend_id="fake",
             model_id=self._model_id,
@@ -243,5 +247,31 @@ async def test_reload_worker_preserves_old_effective_on_failure():
     assert reg.state() == RegistryState.ERROR
     assert "init boom" in (reg.last_error() or "")
     assert backend1.shutdown_called is False
+
+    await reg.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reload_worker_shuts_down_backend_if_describe_fails():
+    backend1 = FakeBackend(model_id="m1")
+    backend2 = FakeBackend(model_id="m2", fail_describe=True)
+    next_backend = [backend1, backend2]
+
+    def factory(config):
+        return next_backend.pop(0)
+
+    cfg1 = {"stt": {"backend": "fake", "fake": {"model_id": "m1"}}}
+    cfg2 = {"stt": {"backend": "fake", "fake": {"model_id": "m2"}}}
+    reg = BackendRegistry(cfg1, factory=factory)
+
+    await reg.start()
+    await asyncio.sleep(0.01)
+
+    await reg._reload_worker(cfg2, compute_signature(cfg2))
+
+    assert reg.is_ready() is True
+    assert reg.current_descriptor().model_id == "m1"
+    assert reg.state() == RegistryState.ERROR
+    assert backend2.shutdown_called is True
 
     await reg.shutdown()
