@@ -14,7 +14,9 @@ class RegistryState(enum.Enum):
 
 def compute_signature(config: dict) -> str:
     """Compute a stable fingerprint for STT-relevant config only."""
-    stt = config.get("stt", {})
+    stt = config.get("stt") or {}
+    if not isinstance(stt, dict):
+        stt = {}
     relevant = {
         "backend": stt.get("backend"),
         "sherpa": stt.get("sherpa"),

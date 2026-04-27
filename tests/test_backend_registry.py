@@ -32,3 +32,9 @@ def test_compute_signature_ignores_unrelated_fields():
     cfg1 = {"stt": {"backend": "sherpa"}, "ui": {"x": 1}}
     cfg2 = {"stt": {"backend": "sherpa"}, "ui": {"x": 2}}
     assert compute_signature(cfg1) == compute_signature(cfg2)
+
+
+def test_compute_signature_treats_missing_or_null_stt_as_empty():
+    cfg1 = {}
+    cfg2 = {"stt": None}
+    assert compute_signature(cfg1) == compute_signature(cfg2)
