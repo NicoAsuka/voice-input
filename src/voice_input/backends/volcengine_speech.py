@@ -11,7 +11,13 @@ from typing import Any
 
 import numpy as np
 
-from voice_input.backends.base import TranscriptionBackend
+from voice_input.backends.base import (
+    BackendCapabilities,
+    BackendDescriptor,
+    RecognitionError,
+    Session,
+    TranscriptionBackend,
+)
 
 log = logging.getLogger(__name__)
 
@@ -277,3 +283,52 @@ class VolcengineSpeechBackend(TranscriptionBackend):
         }
         normalized = mapping.get(language.strip().lower())
         return normalized or language
+
+    def is_ready(self) -> bool:
+        return bool(self.app_id and self.access_key and self.secret_key)
+
+    def describe(self) -> BackendDescriptor:
+        return BackendDescriptor(
+            backend_id="volcengine",
+            model_id=self.resource_id,
+            capabilities=BackendCapabilities(
+                supports_streaming=True,
+                requires_network=True,
+                supports_vad=False,
+            ),
+        )
+
+    def create_session(self, language: str) -> Session:
+        return _VolcSession(self, language)
+
+    async def shutdown(self) -> None:
+        pass
+
+
+class _VolcSession(Session):
+    def __init__(self, backend: VolcengineSpeechBackend, language: str) -> None:
+        self._backend = backend
+        self._language = language
+        self._buffer: list[np.ndarray] = []
+        self._cancelled = False
+
+    def push_audio(self, pcm_int16: np.ndarray) -> None:
+        if not self._cancelled:
+            self._buffer.append(pcm_int16)
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        self._buffer.clear()
+
+    async def finish(self) -> str:
+        if self._cancelled or not self._buffer:
+            return ""
+        audio = np.concatenate(self._buffer)
+        try:
+            return await self._backend.transcribe(audio, self._language)
+        except RecognitionError:
+            raise
+        except Exception as e:
+            raise RecognitionError(
+                str(e), user_message=f"Volcengine error: {str(e)[:80]}"
+            ) from e

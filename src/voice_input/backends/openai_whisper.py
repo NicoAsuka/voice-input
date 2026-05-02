@@ -8,7 +8,13 @@ import wave
 import httpx
 import numpy as np
 
-from voice_input.backends.base import TranscriptionBackend
+from voice_input.backends.base import (
+    BackendCapabilities,
+    BackendDescriptor,
+    RecognitionError,
+    Session,
+    TranscriptionBackend,
+)
 
 log = logging.getLogger(__name__)
 
@@ -66,3 +72,49 @@ class OpenAIWhisperBackend(TranscriptionBackend):
 
     async def cleanup(self) -> None:
         await self._client.aclose()
+
+    def is_ready(self) -> bool:
+        return bool(self._client)
+
+    def describe(self) -> BackendDescriptor:
+        return BackendDescriptor(
+            backend_id="openai-whisper",
+            model_id=self.model,
+            capabilities=BackendCapabilities(
+                supports_streaming=False,
+                requires_network=True,
+            ),
+        )
+
+    def create_session(self, language: str) -> Session:
+        return _OpenAISession(self, language)
+
+    async def shutdown(self) -> None:
+        await self._client.aclose()
+
+
+class _OpenAISession(Session):
+    def __init__(self, backend: OpenAIWhisperBackend, language: str) -> None:
+        self._backend = backend
+        self._language = language
+        self._buffer: list[np.ndarray] = []
+        self._cancelled = False
+
+    def push_audio(self, pcm_int16: np.ndarray) -> None:
+        if not self._cancelled:
+            self._buffer.append(pcm_int16)
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        self._buffer.clear()
+
+    async def finish(self) -> str:
+        if self._cancelled or not self._buffer:
+            return ""
+        audio = np.concatenate(self._buffer)
+        try:
+            return await self._backend.transcribe(audio, self._language)
+        except Exception as e:
+            raise RecognitionError(
+                str(e), user_message=f"OpenAI Whisper error: {str(e)[:80]}"
+            ) from e
