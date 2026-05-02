@@ -22,12 +22,13 @@ DEFAULT_CONFIG: dict = {
         "key": "Meta+Space",
     },
     "stt": {
-        "backend": "local",
-        "local": {
-            "engine": "whisper",
-            "model": "medium",
-            "language": "zh",
-            "device": "auto",
+        "backend": "sherpa",
+        "language": "zh",
+        "sherpa": {
+            "model_id": "sherpa-onnx-paraformer-zh-2024-03-09",
+            "vad_enabled": True,
+            "num_threads": 2,
+            "provider": "cpu",
         },
         "openai": {
             "api_base": "https://api.openai.com/v1",
@@ -45,6 +46,35 @@ DEFAULT_CONFIG: dict = {
         "enabled": True,
         "api_base": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
+    },
+    "postprocess": {
+        "enabled": True,
+        "active_scene": "default",
+        "scenes": [
+            {
+                "id": "default",
+                "name": "默认",
+                "prompt": "修正 ASR 识别错误，保持原意，返回纯文本。",
+            },
+            {
+                "id": "code",
+                "name": "代码场景",
+                "prompt": (
+                    "这是程序员说的话。修正中文同音字错误，把英文技术术语恢复"
+                    "（例如：'派森' → 'Python'，'瑞克特' → 'React'）。返回纯文本。"
+                ),
+            },
+            {
+                "id": "translate-en",
+                "name": "翻译为英文",
+                "prompt": "把以下中文翻译为地道英文，只返回译文。",
+            },
+            {
+                "id": "polish",
+                "name": "口语转书面",
+                "prompt": "把口语化的中文改为书面表达，删除语气词和重复，保持原意。",
+            },
+        ],
     },
     "audio": {
         "device": "default",
@@ -93,47 +123,70 @@ def _toml_value(v: object) -> str:
     if isinstance(v, float):
         return str(v)
     if isinstance(v, str):
+        if "\n" in v or '"' in v:
+            escaped = v.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+            return f'"""{escaped}"""'
         return f'"{v}"'
     return str(v)
 
 
 def _to_toml(data: dict, prefix: str = "") -> str:
-    """Simple dict-to-TOML serializer (flat sections only)."""
+    """Simple dict-to-TOML serializer with [[arrays of tables]]."""
     lines: list[str] = []
     scalars: list[tuple[str, object]] = []
     sections: list[tuple[str, dict]] = []
+    array_tables: list[tuple[str, list]] = []
+
     for k, v in data.items():
         if isinstance(v, dict):
             sections.append((k, v))
+        elif isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+            array_tables.append((k, v))
         else:
             scalars.append((k, v))
+
     for k, v in scalars:
         lines.append(f"{k} = {_toml_value(v)}")
+
     for section_name, section_dict in sections:
         full = f"{prefix}.{section_name}" if prefix else section_name
         lines.append(f"\n[{full}]")
         for k, v in section_dict.items():
             if isinstance(v, dict):
                 lines.append(_to_toml({k: v}, prefix=full))
+            elif isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+                array_full = f"{full}.{k}"
+                for entry in v:
+                    lines.append(f"\n[[{array_full}]]")
+                    for ek, ev in entry.items():
+                        lines.append(f"{ek} = {_toml_value(ev)}")
             else:
                 lines.append(f"{k} = {_toml_value(v)}")
+
+    for k, v in array_tables:
+        full = f"{prefix}.{k}" if prefix else k
+        for entry in v:
+            lines.append(f"\n[[{full}]]")
+            for ek, ev in entry.items():
+                lines.append(f"{ek} = {_toml_value(ev)}")
+
     return "\n".join(lines)
 
 
 AppConfig = dict  # type alias for clarity
 
 
-def _migrate_legacy_whisper_config(cfg: dict, user_cfg: dict) -> dict:
-    """Map old [whisper] config values to [stt.local] when not explicitly set."""
-    legacy = user_cfg.get("whisper")
-    if not isinstance(legacy, dict):
-        return cfg
-
-    user_local = user_cfg.get("stt", {}).get("local", {})
-    local_cfg = cfg.setdefault("stt", {}).setdefault("local", {})
-    for key in ("model", "language", "device"):
-        if key in legacy and key not in user_local:
-            local_cfg[key] = copy.deepcopy(legacy[key])
+def _migrate_legacy_local_config(cfg: dict, user_cfg: dict) -> dict:
+    """Map old [stt] backend=local / [stt.local] / [whisper] to new sherpa backend."""
+    user_stt = user_cfg.get("stt", {})
+    # Old "local" backend -> "sherpa"
+    if user_stt.get("backend") == "local":
+        cfg.setdefault("stt", {})["backend"] = "sherpa"
+    # Old [stt.local] language -> top-level stt.language
+    legacy_local = user_stt.get("local", {})
+    if isinstance(legacy_local, dict) and "language" in legacy_local:
+        cfg.setdefault("stt", {}).setdefault("language", legacy_local["language"])
+    # Old [whisper] section -> ignore (whisper backend removed)
     return cfg
 
 
@@ -144,7 +197,7 @@ def load_config(config_dir: Path | None = None) -> AppConfig:
         with open(config_file, "rb") as f:
             user_cfg = tomllib.load(f)
         cfg = _deep_merge(DEFAULT_CONFIG, user_cfg)
-        cfg = _migrate_legacy_whisper_config(cfg, user_cfg)
+        cfg = _migrate_legacy_local_config(cfg, user_cfg)
     else:
         cfg = copy.deepcopy(DEFAULT_CONFIG)
         # Write defaults so the user has a template
