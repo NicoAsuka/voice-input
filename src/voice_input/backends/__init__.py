@@ -8,20 +8,18 @@ from voice_input.config import AppConfig
 def create_backend(config: AppConfig) -> TranscriptionBackend:
     """Create a transcription backend from app config."""
     stt_cfg = config.get("stt", {})
-    backend_name = stt_cfg.get("backend", "local")
+    backend_name = stt_cfg.get("backend", "sherpa")
 
-    if backend_name == "local":
-        from voice_input.backends.local import LocalBackend
-
-        return LocalBackend(config)
+    # Legacy 'local' alias maps to sherpa
+    if backend_name in ("sherpa", "local"):
+        from voice_input.backends.sherpa_backend import SherpaBackend
+        return SherpaBackend(config)
 
     if backend_name == "openai":
         from voice_input.backends.openai_whisper import OpenAIWhisperBackend
-
         openai_cfg = stt_cfg.get("openai", {})
         try:
             import keyring
-
             api_key = keyring.get_password("voice-input", "stt-openai-api-key") or ""
         except Exception:
             api_key = ""
@@ -33,7 +31,6 @@ def create_backend(config: AppConfig) -> TranscriptionBackend:
 
     if backend_name == "google":
         from voice_input.backends.google_speech import GoogleSpeechBackend
-
         google_cfg = stt_cfg.get("google", {})
         return GoogleSpeechBackend(
             credentials_path=google_cfg.get("credentials_path", ""),
@@ -41,11 +38,9 @@ def create_backend(config: AppConfig) -> TranscriptionBackend:
 
     if backend_name == "volcengine":
         from voice_input.backends.volcengine_speech import VolcengineSpeechBackend
-
         volc_cfg = stt_cfg.get("volcengine", {})
         try:
             import keyring
-
             access_key = (
                 keyring.get_password("voice-input", "stt-volcengine-access-key") or ""
             )

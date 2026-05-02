@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -15,11 +17,13 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from voice_input.asr.model_manager import REGISTRY
 from voice_input.config import AppConfig, save_config
 
 if TYPE_CHECKING:
@@ -126,6 +130,34 @@ class SettingsDialog(QDialog):
         stt_layout.addStretch()
         tabs.addTab(stt_tab, "STT")
 
+        # Local (sherpa-onnx) tab
+        local_tab = QWidget()
+        local_layout = QVBoxLayout(local_tab)
+        local_form = QFormLayout()
+
+        self._sherpa_model_combo = QComboBox()
+        for model_id in REGISTRY:
+            meta = REGISTRY[model_id]
+            label = f"{model_id}  ({meta.language}, {meta.size_bytes // 1_000_000}MB)"
+            self._sherpa_model_combo.addItem(label, model_id)
+        local_form.addRow("Model:", self._sherpa_model_combo)
+
+        self._sherpa_vad_check = QCheckBox("启用 VAD（去除静音）")
+        local_form.addRow("VAD:", self._sherpa_vad_check)
+
+        self._sherpa_threads_spin = QSpinBox()
+        self._sherpa_threads_spin.setRange(1, 8)
+        local_form.addRow("Threads:", self._sherpa_threads_spin)
+
+        self._sherpa_provider_combo = QComboBox()
+        for provider in ("cpu", "cuda", "coreml"):
+            self._sherpa_provider_combo.addItem(provider, provider)
+        local_form.addRow("Provider:", self._sherpa_provider_combo)
+
+        local_layout.addLayout(local_form)
+        local_layout.addStretch()
+        tabs.addTab(local_tab, "Local")
+
         layout.addWidget(tabs)
 
         # Button box
@@ -162,6 +194,19 @@ class SettingsDialog(QDialog):
         )
         self._load_keyring_field(self._stt_volc_ak_edit, "stt-volcengine-access-key")
         self._load_keyring_field(self._stt_volc_sk_edit, "stt-volcengine-secret-key")
+
+        # Local (sherpa-onnx)
+        sherpa_cfg = stt.get("sherpa", {})
+        current_model = sherpa_cfg.get("model_id", "sherpa-onnx-paraformer-zh-2024-03-09")
+        idx = self._sherpa_model_combo.findData(current_model)
+        if idx >= 0:
+            self._sherpa_model_combo.setCurrentIndex(idx)
+        self._sherpa_vad_check.setChecked(sherpa_cfg.get("vad_enabled", True))
+        self._sherpa_threads_spin.setValue(sherpa_cfg.get("num_threads", 2))
+        current_provider = sherpa_cfg.get("provider", "cpu")
+        idx = self._sherpa_provider_combo.findData(current_provider)
+        if idx >= 0:
+            self._sherpa_provider_combo.setCurrentIndex(idx)
 
     def _load_api_key(self) -> None:
         try:
@@ -243,6 +288,12 @@ class SettingsDialog(QDialog):
         )
         self._save_keyring_field(self._stt_volc_ak_edit, "stt-volcengine-access-key")
         self._save_keyring_field(self._stt_volc_sk_edit, "stt-volcengine-secret-key")
+
+        sherpa_cfg = stt.setdefault("sherpa", {})
+        sherpa_cfg["model_id"] = self._sherpa_model_combo.currentData()
+        sherpa_cfg["vad_enabled"] = self._sherpa_vad_check.isChecked()
+        sherpa_cfg["num_threads"] = self._sherpa_threads_spin.value()
+        sherpa_cfg["provider"] = self._sherpa_provider_combo.currentData()
 
         save_config(self._config)
         self.accept()

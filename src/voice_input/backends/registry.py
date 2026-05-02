@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import enum
 import hashlib
-import logging
 import json
+import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -51,7 +52,7 @@ class BackendRegistry:
     """Own the effective backend and reload it when STT config changes."""
 
     def __init__(self, config: dict, factory: Callable[[dict], Any]) -> None:
-        self._config = config
+        self._config = deepcopy(config)
         self._factory = factory
         self._effective: _Effective | None = None
         self._target_signature: str | None = None
@@ -119,6 +120,7 @@ class BackendRegistry:
             self._notify_listeners(listeners, RegistryState.LOADING, None)
 
     async def synchronize(self, config: dict) -> None:
+        config = deepcopy(config)
         new_signature = compute_signature(config)
         self._config = config
         if new_signature == self._target_signature:

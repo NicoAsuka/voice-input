@@ -7,7 +7,13 @@ import os
 import httpx
 import numpy as np
 
-from voice_input.backends.base import TranscriptionBackend
+from voice_input.backends.base import (
+    BackendCapabilities,
+    BackendDescriptor,
+    RecognitionError,
+    Session,
+    TranscriptionBackend,
+)
 
 log = logging.getLogger(__name__)
 
@@ -94,3 +100,49 @@ class GoogleSpeechBackend(TranscriptionBackend):
 
     async def cleanup(self) -> None:
         await self._client.aclose()
+
+    def is_ready(self) -> bool:
+        return bool(self.credentials_path)
+
+    def describe(self) -> BackendDescriptor:
+        return BackendDescriptor(
+            backend_id="google",
+            model_id="google-stt-default",
+            capabilities=BackendCapabilities(
+                supports_streaming=False,
+                requires_network=True,
+            ),
+        )
+
+    def create_session(self, language: str) -> Session:
+        return _GoogleSession(self, language)
+
+    async def shutdown(self) -> None:
+        await self._client.aclose()
+
+
+class _GoogleSession(Session):
+    def __init__(self, backend: GoogleSpeechBackend, language: str) -> None:
+        self._backend = backend
+        self._language = language
+        self._buffer: list[np.ndarray] = []
+        self._cancelled = False
+
+    def push_audio(self, pcm_int16: np.ndarray) -> None:
+        if not self._cancelled:
+            self._buffer.append(pcm_int16)
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        self._buffer.clear()
+
+    async def finish(self) -> str:
+        if self._cancelled or not self._buffer:
+            return ""
+        audio = np.concatenate(self._buffer)
+        try:
+            return await self._backend.transcribe(audio, self._language)
+        except Exception as e:
+            raise RecognitionError(
+                str(e), user_message=f"Google STT error: {str(e)[:80]}"
+            ) from e

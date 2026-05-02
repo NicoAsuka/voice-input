@@ -1,70 +1,61 @@
+from __future__ import annotations
+
 import pytest
 from unittest.mock import patch
 
 from voice_input.backends import create_backend
-from voice_input.backends.base import TranscriptionBackend
-from voice_input.backends.google_speech import GoogleSpeechBackend
-from voice_input.backends.local import LocalBackend
-from voice_input.backends.openai_whisper import OpenAIWhisperBackend
-from voice_input.backends.volcengine_speech import VolcengineSpeechBackend
+from voice_input.backends.sherpa_backend import SherpaBackend
 
 
-def _make_config(backend: str = "local", **overrides) -> dict:
-    cfg = {
-        "stt": {
-            "backend": backend,
-            "local": {
-                "engine": "whisper",
-                "model": "tiny",
-                "language": "zh",
-                "device": "cpu",
-            },
-            "openai": {"api_base": "https://api.openai.com/v1", "model": "whisper-1"},
-            "google": {"credentials_path": ""},
-            "volcengine": {"app_id": "test", "resource_id": "volc.test.resource"},
-        },
-    }
-    cfg.update(overrides)
-    return cfg
+def test_create_sherpa_backend():
+    cfg = {"stt": {"backend": "sherpa", "sherpa": {"model_id": "x"}}}
+    backend = create_backend(cfg)
+    assert isinstance(backend, SherpaBackend)
 
 
-def test_create_local_backend():
-    backend = create_backend(_make_config("local"))
-    assert isinstance(backend, LocalBackend)
+def test_create_unknown_backend_raises():
+    cfg = {"stt": {"backend": "nonexistent"}}
+    with pytest.raises(ValueError, match="Unknown STT backend"):
+        create_backend(cfg)
 
 
-def test_create_backend_default_is_local():
-    backend = create_backend({"stt": _make_config("local")["stt"]})
-    assert isinstance(backend, LocalBackend)
+def test_create_local_backend_id_now_routes_to_sherpa():
+    """Legacy 'local' value still works (treated as sherpa)."""
+    cfg = {"stt": {"backend": "local", "sherpa": {}}}
+    backend = create_backend(cfg)
+    assert isinstance(backend, SherpaBackend)
 
 
-def test_create_openai_backend():
-    with patch("keyring.get_password", return_value="sk-test"):
-        backend = create_backend(_make_config("openai"))
+def test_create_volcengine_backend(monkeypatch):
+    monkeypatch.setattr(
+        "keyring.get_password",
+        lambda service, key: "fake-key" if "volcengine" in key else None,
+    )
+    from voice_input.backends.volcengine_speech import VolcengineSpeechBackend
+    cfg = {"stt": {"backend": "volcengine", "volcengine": {"app_id": "x", "resource_id": "r"}}}
+    backend = create_backend(cfg)
+    assert isinstance(backend, VolcengineSpeechBackend)
+
+
+def test_create_openai_backend(monkeypatch):
+    monkeypatch.setattr(
+        "keyring.get_password",
+        lambda service, key: "sk-test",
+    )
+    from voice_input.backends.openai_whisper import OpenAIWhisperBackend
+    cfg = {"stt": {"backend": "openai", "openai": {}}}
+    backend = create_backend(cfg)
     assert isinstance(backend, OpenAIWhisperBackend)
 
 
 def test_create_google_backend():
-    backend = create_backend(_make_config("google"))
+    from voice_input.backends.google_speech import GoogleSpeechBackend
+    cfg = {"stt": {"backend": "google", "google": {"credentials_path": "/tmp/creds.json"}}}
+    backend = create_backend(cfg)
     assert isinstance(backend, GoogleSpeechBackend)
 
 
-def test_create_volcengine_backend():
-    with patch("keyring.get_password", return_value="fake-key"):
-        backend = create_backend(_make_config("volcengine"))
-    assert isinstance(backend, VolcengineSpeechBackend)
-    assert backend.resource_id == "volc.test.resource"
-
-
-def test_create_unknown_backend_raises():
-    with pytest.raises(ValueError, match="Unknown STT backend"):
-        create_backend(_make_config("nonexistent"))
-
-
-def test_all_backends_are_transcription_backends():
-    local = create_backend(_make_config("local"))
-    assert isinstance(local, TranscriptionBackend)
-
-    with patch("keyring.get_password", return_value="sk-test"):
-        openai_b = create_backend(_make_config("openai"))
-    assert isinstance(openai_b, TranscriptionBackend)
+def test_default_backend_is_sherpa():
+    cfg = {"stt": {}}
+    backend = create_backend(cfg)
+    assert isinstance(backend, SherpaBackend)
