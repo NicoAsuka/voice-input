@@ -10,6 +10,8 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QWidget
 
+    from voice_input.postprocess.scene import Scene
+
 log = logging.getLogger(__name__)
 
 LANGUAGES = {
@@ -21,15 +23,10 @@ LANGUAGES = {
 }
 
 STT_BACKENDS = {
-    "local": "Local",
+    "sherpa": "Local (sherpa-onnx)",
     "openai": "OpenAI Whisper API",
     "google": "Google Speech-to-Text",
     "volcengine": "字节火山语音识别",
-}
-
-ENGINES = {
-    "whisper": "faster-whisper",
-    "sensevoice": "SenseVoice Small",
 }
 
 
@@ -43,8 +40,11 @@ class TrayManager(QSystemTrayIcon):
         super().__init__(parent)
         self._state = "Idle"
         self._current_language = "zh"
-        self._current_backend = "local"
+        self._current_backend = "sherpa"
         self._llm_enabled = True
+        self._scene_actions: dict[str, QAction] = {}
+        self._scene_menu: QMenu | None = None
+        self._scene_group: QActionGroup | None = None
 
         # Icons from Breeze theme
         self._icon_idle = QIcon.fromTheme("audio-input-microphone")
@@ -63,6 +63,9 @@ class TrayManager(QSystemTrayIcon):
         self._status_action = QAction("Status: Idle", menu)
         self._status_action.setEnabled(False)
         menu.addAction(self._status_action)
+        self._backend_status_action = QAction("Backend: loading...", menu)
+        self._backend_status_action.setEnabled(False)
+        menu.addAction(self._backend_status_action)
         menu.addSeparator()
 
         # Start/Stop
@@ -105,21 +108,11 @@ class TrayManager(QSystemTrayIcon):
         stt_menu.addAction(self._stt_settings_action)
         menu.addMenu(stt_menu)
 
-        # Local Engine submenu. This setting only affects the local STT backend.
-        engine_menu = QMenu("Local Engine", menu)
-        self._engine_group = QActionGroup(engine_menu)
-        self._engine_group.setExclusive(True)
-        self._engine_actions: dict[str, QAction] = {}
-        for key, label in ENGINES.items():
-            action = QAction(label, engine_menu)
-            action.setCheckable(True)
-            action.setData(key)
-            if key == "whisper":
-                action.setChecked(True)
-            self._engine_group.addAction(action)
-            engine_menu.addAction(action)
-            self._engine_actions[key] = action
-        menu.addMenu(engine_menu)
+        # Scene submenu
+        self._scene_menu = QMenu("场景 / Scene", menu)
+        self._scene_group = QActionGroup(self._scene_menu)
+        self._scene_group.setExclusive(True)
+        menu.addMenu(self._scene_menu)
 
         # LLM submenu
         llm_menu = QMenu("LLM Refinement", menu)
@@ -169,22 +162,36 @@ class TrayManager(QSystemTrayIcon):
         return self._stt_settings_action
 
     @property
-    def engine_group(self) -> QActionGroup:
-        return self._engine_group
-
-    @property
     def scene_group(self) -> QActionGroup:
-        # Placeholder - will be fully implemented in Task 16
-        if not hasattr(self, '_scene_group') or self._scene_group is None:
-            self._scene_group = QActionGroup(self)
-            self._scene_group.setExclusive(True)
+        assert self._scene_group is not None
         return self._scene_group
 
-    def set_scenes(self, scenes, active_id="default"):
-        pass  # Placeholder for Task 16
+    def set_scenes(self, scenes: list[Scene], active_id: str = "default") -> None:
+        """Repopulate the scene submenu from a list of Scene objects."""
+        assert self._scene_menu is not None
+        assert self._scene_group is not None
+        # Clear existing actions
+        for action in self._scene_actions.values():
+            self._scene_group.removeAction(action)
+            self._scene_menu.removeAction(action)
+        self._scene_actions.clear()
+        # Add new actions
+        for scene in scenes:
+            action = QAction(scene.name, self._scene_menu)
+            action.setCheckable(True)
+            action.setData(scene.id)
+            if scene.id == active_id:
+                action.setChecked(True)
+            self._scene_group.addAction(action)
+            self._scene_menu.addAction(action)
+            self._scene_actions[scene.id] = action
 
     def set_backend_status(self, state: str, error: str | None = None) -> None:
-        pass  # Placeholder for Task 16
+        """Update backend status display text."""
+        if error:
+            self._backend_status_action.setText(f"Backend: {state} ({error})")
+        else:
+            self._backend_status_action.setText(f"Backend: {state}")
 
     @property
     def llm_toggle(self) -> QAction:
@@ -226,13 +233,12 @@ class TrayManager(QSystemTrayIcon):
             self._lang_actions[code].setChecked(True)
 
     def set_backend(self, backend: str) -> None:
+        # Map legacy "local" to "sherpa"
+        if backend == "local":
+            backend = "sherpa"
         self._current_backend = backend
         if backend in self._stt_actions:
             self._stt_actions[backend].setChecked(True)
-
-    def set_engine(self, engine: str) -> None:
-        if engine in self._engine_actions:
-            self._engine_actions[engine].setChecked(True)
 
     def set_llm_enabled(self, enabled: bool) -> None:
         self._llm_enabled = enabled
