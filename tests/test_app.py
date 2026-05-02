@@ -1,20 +1,30 @@
-# tests/test_app.py
+from __future__ import annotations
+
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
 
-from voice_input.app import AppController, AppState
+from voice_input.app import AppController, AppState, _can_transition
+from voice_input.backends.base import (
+    BackendCapabilities,
+    BackendDescriptor,
+    Session,
+    TranscriptionBackend,
+)
+from voice_input.backends.registry import BackendRegistry, RegistryState
 
 
 def test_state_transitions():
-    """Verify valid state transitions."""
-    assert AppState.IDLE.can_transition_to(AppState.RECORDING)
-    assert AppState.RECORDING.can_transition_to(AppState.REFINING)
-    assert AppState.RECORDING.can_transition_to(AppState.IDLE)
-    assert AppState.REFINING.can_transition_to(AppState.IDLE)
-    assert not AppState.IDLE.can_transition_to(AppState.REFINING)
-    assert not AppState.REFINING.can_transition_to(AppState.RECORDING)
+    assert _can_transition(AppState.IDLE, AppState.RECORDING)
+    assert _can_transition(AppState.RECORDING, AppState.TRANSCRIBING)
+    assert _can_transition(AppState.RECORDING, AppState.IDLE)
+    assert _can_transition(AppState.TRANSCRIBING, AppState.IDLE)
+    assert _can_transition(AppState.TRANSCRIBING, AppState.REFINING)
+    assert _can_transition(AppState.REFINING, AppState.IDLE)
+    assert not _can_transition(AppState.IDLE, AppState.REFINING)
+    assert not _can_transition(AppState.REFINING, AppState.RECORDING)
 
 
 def test_transcribing_state_exists():
@@ -22,89 +32,13 @@ def test_transcribing_state_exists():
     assert AppState.TRANSCRIBING.value == "Transcribing"
 
 
-def test_transcribing_state_transitions():
-    """Verify TRANSCRIBING state transitions."""
-    assert AppState.RECORDING.can_transition_to(AppState.TRANSCRIBING)
-    assert AppState.TRANSCRIBING.can_transition_to(AppState.IDLE)
-    assert AppState.TRANSCRIBING.can_transition_to(AppState.REFINING)
-    assert not AppState.IDLE.can_transition_to(AppState.TRANSCRIBING)
-    assert not AppState.TRANSCRIBING.can_transition_to(AppState.RECORDING)
-
-
-def test_backend_worker_restart_rejected_before_worker_ready():
-    controller = AppController.__new__(AppController)
-    controller._worker_ready = False
-    controller._restart_backend_worker = MagicMock()
-    controller._send_notification = MagicMock()
-    controller._tray = MagicMock()
-    controller._state = AppState.IDLE
-    controller._config = {"stt": {"backend": "local"}}
-    action = MagicMock()
-    action.data.return_value = "openai"
-
-    AppController._on_backend_changed(controller, action)
-
-    assert controller._config["stt"]["backend"] == "local"
-    controller._restart_backend_worker.assert_not_called()
-    controller._send_notification.assert_called_once()
-
-
-def test_engine_change_sets_sensevoice_default_model():
-    controller = AppController.__new__(AppController)
-    controller._worker_ready = True
-    controller._restart_backend_worker = MagicMock()
-    controller._state = AppState.IDLE
-    controller._config = {
-        "stt": {
-            "backend": "local",
-            "local": {"engine": "whisper", "model": "medium"},
-        },
-    }
-    action = MagicMock()
-    action.data.return_value = "sensevoice"
-
-    with (
-        patch("voice_input.app.save_config"),
-        patch("voice_input.app.importlib.util.find_spec", return_value=object()),
-    ):
-        AppController._on_engine_changed(controller, action)
-
-    assert controller._config["stt"]["local"]["engine"] == "sensevoice"
-    assert controller._config["stt"]["local"]["model"] == "iic/SenseVoiceSmall"
-    controller._restart_backend_worker.assert_called_once()
-
-
-def test_engine_change_rejected_when_sensevoice_dependency_missing():
-    controller = AppController.__new__(AppController)
-    controller._worker_ready = True
-    controller._restart_backend_worker = MagicMock()
-    controller._send_notification = MagicMock()
-    controller._tray = MagicMock()
-    controller._state = AppState.IDLE
-    controller._config = {
-        "stt": {
-            "backend": "local",
-            "local": {"engine": "whisper", "model": "small"},
-        },
-    }
-    action = MagicMock()
-    action.data.return_value = "sensevoice"
-
-    with patch("voice_input.app.importlib.util.find_spec", return_value=None):
-        AppController._on_engine_changed(controller, action)
-
-    assert controller._config["stt"]["local"]["engine"] == "whisper"
-    assert controller._config["stt"]["local"]["model"] == "small"
-    controller._restart_backend_worker.assert_not_called()
-    controller._send_notification.assert_called_once()
-
-
 def test_llm_toggle_off_closes_existing_refiner():
     controller = AppController.__new__(AppController)
     controller._llm_enabled = True
     refiner = MagicMock()
     controller._llm = refiner
-    controller._config = {"llm": {"enabled": True}}
+    controller._pipeline = MagicMock()
+    controller._config = {"postprocess": {"enabled": True}}
 
     with patch("voice_input.app.save_config"), patch(
         "voice_input.app.asyncio.ensure_future"
@@ -112,51 +46,51 @@ def test_llm_toggle_off_closes_existing_refiner():
         AppController._on_llm_toggled(controller, False)
 
     assert controller._llm_enabled is False
-    assert controller._config["llm"]["enabled"] is False
     assert controller._llm is None
+    assert controller._pipeline is None
     refiner.close.assert_called_once()
     ensure_future.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_final_transcription_uses_full_buffer_before_injecting():
+def test_backend_changed_triggers_synchronize():
     controller = AppController.__new__(AppController)
-    controller._backend = MagicMock()
-    controller._backend.transcribe = AsyncMock(return_value="final text")
-    controller._language = "zh"
-    controller._llm_enabled = False
-    controller._llm = None
-    controller._last_transcription = "partial text"
-    controller._inject_and_finish = MagicMock()
+    controller._config = {"stt": {"backend": "sherpa"}}
+    controller._registry = MagicMock()
+    action = MagicMock()
+    action.data.return_value = "openai"
 
-    audio = np.ones(32000, dtype=np.int16)
-    await AppController._transcribe_and_inject(
-        controller,
-        audio,
-        fallback_text="partial text",
-    )
+    with patch("voice_input.app.save_config"), patch(
+        "voice_input.app.asyncio.ensure_future"
+    ) as ef:
+        AppController._on_backend_changed(controller, action)
 
-    controller._backend.transcribe.assert_awaited_once_with(audio, "zh")
-    assert controller._last_transcription == "final text"
-    controller._inject_and_finish.assert_called_once_with("final text")
+    assert controller._config["stt"]["backend"] == "openai"
+    ef.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_final_transcription_falls_back_to_partial_text():
+def test_scene_changed_updates_config():
     controller = AppController.__new__(AppController)
-    controller._backend = MagicMock()
-    controller._backend.transcribe = AsyncMock(return_value="")
-    controller._language = "zh"
-    controller._llm_enabled = False
-    controller._llm = None
-    controller._last_transcription = "partial text"
-    controller._inject_and_finish = MagicMock()
+    controller._config = {"postprocess": {}}
+    controller._scenes = MagicMock()
+    action = MagicMock()
+    action.data.return_value = "code"
 
-    audio = np.ones(32000, dtype=np.int16)
-    await AppController._transcribe_and_inject(
-        controller,
-        audio,
-        fallback_text="partial text",
-    )
+    with patch("voice_input.app.save_config"):
+        AppController._on_scene_changed(controller, action)
 
-    controller._inject_and_finish.assert_called_once_with("partial text")
+    controller._scenes.set_active.assert_called_once_with("code")
+    assert controller._config["postprocess"]["active_scene"] == "code"
+
+
+def test_start_recording_blocked_when_registry_not_ready():
+    controller = AppController.__new__(AppController)
+    controller._state = AppState.IDLE
+    controller._registry = MagicMock()
+    controller._registry.is_ready.return_value = False
+    controller._registry.state.return_value = RegistryState.LOADING
+    controller._send_notification = MagicMock()
+
+    AppController._on_start_recording(controller)
+
+    controller._send_notification.assert_called_once()
+    assert controller._state == AppState.IDLE

@@ -173,6 +173,20 @@ class TrayManager(QSystemTrayIcon):
         return self._engine_group
 
     @property
+    def scene_group(self) -> QActionGroup:
+        # Placeholder - will be fully implemented in Task 16
+        if not hasattr(self, '_scene_group') or self._scene_group is None:
+            self._scene_group = QActionGroup(self)
+            self._scene_group.setExclusive(True)
+        return self._scene_group
+
+    def set_scenes(self, scenes, active_id="default"):
+        pass  # Placeholder for Task 16
+
+    def set_backend_status(self, state: str, error: str | None = None) -> None:
+        pass  # Placeholder for Task 16
+
+    @property
     def llm_toggle(self) -> QAction:
         return self._llm_toggle
 
