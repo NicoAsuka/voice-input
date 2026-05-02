@@ -69,7 +69,6 @@ class AppController(QObject):
             sample_rate=config["audio"]["sample_rate"],
         )
 
-        # Backend Registry (replaces WhisperWorker)
         self._registry = BackendRegistry(config, factory=create_backend)
         self._registry.add_state_listener(self._on_registry_state)
         self._current_session: Session | None = None
