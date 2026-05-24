@@ -1,23 +1,16 @@
 # src/voice_input/overlay.py
 from __future__ import annotations
 
-import ctypes
-import ctypes.util
 import logging
 import random
-from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
-    QRect,
-    QSize,
     Qt,
-    QTimer,
     pyqtProperty,
-    pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QColor, QPainter, QPainterPath
 from PyQt6.QtWidgets import QApplication, QWidget
 
 log = logging.getLogger(__name__)
@@ -48,10 +41,7 @@ BAR_COLOR = QColor(255, 255, 255, 200)
 
 
 class OverlayWidget(QWidget):
-    """Capsule-shaped overlay at screen bottom. Shows waveform + transcription text.
-
-    Uses Layer Shell on Wayland if available, otherwise Qt fallback flags.
-    """
+    """Capsule-shaped overlay at screen bottom. Shows waveform + transcription text."""
 
     def __init__(self, margin_bottom: int = 80, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -64,7 +54,7 @@ class OverlayWidget(QWidget):
         self._scale = 1.0
         self._text_width = TEXT_MIN_WIDTH
 
-        # Setup window flags (fallback, Layer Shell applied later if available)
+        # Setup window flags for Wayland (frameless, always-on-top, no taskbar entry)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -74,8 +64,6 @@ class OverlayWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
 
         self._setup_geometry()
-        self._try_layer_shell()
-        self._try_blur()
 
         # Animations — use custom opacity property (windowOpacity unsupported on some Wayland backends)
         self._opacity_anim = QPropertyAnimation(self, b"capsuleOpacity")
@@ -91,36 +79,9 @@ class OverlayWidget(QWidget):
         y = geom.y() + geom.height() - CAPSULE_HEIGHT - self._margin_bottom
         self.setGeometry(x, y, capsule_w, CAPSULE_HEIGHT)
 
-    def _try_layer_shell(self) -> None:
-        """Attempt to configure via zwlr_layer_shell_v1. Best-effort."""
-        try:
-            log.debug("Layer Shell: using Qt fallback flags (sufficient for KDE Plasma 6)")
-        except Exception as e:
-            log.debug("Layer Shell setup failed, using fallback: %s", e)
-
-    def _try_blur(self) -> None:
-        """Try to enable KWin blur behind the window."""
-        try:
-            pass
-        except Exception:
-            pass
-
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self._apply_kwin_blur()
         self._animate_entry()
-
-    def _apply_kwin_blur(self) -> None:
-        """Apply KWin blur via X11 property or Wayland protocol."""
-        try:
-            from PyQt6.QtGui import QGuiApplication
-            native = self.windowHandle()
-            if native is not None:
-                self._use_blur = True
-                log.debug("KWin blur hint applied")
-        except Exception as e:
-            log.debug("KWin blur not available: %s", e)
-            self._use_blur = False
 
     def _animate_entry(self) -> None:
         # Disconnect stale finished→hide() from a previous animate_exit

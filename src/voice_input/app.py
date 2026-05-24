@@ -5,13 +5,16 @@ import asyncio
 import enum
 import logging
 import queue
+import subprocess
 import sys
+import threading
 
 import numpy as np
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from voice_input import __version__
 from voice_input.audio import AudioRecorder, compute_rms
 from voice_input.backends import create_backend
 from voice_input.backends.base import RecognitionError, Session
@@ -19,6 +22,7 @@ from voice_input.backends.registry import BackendRegistry, RegistryState
 from voice_input.config import AppConfig, load_config, save_config
 from voice_input.hotkey import HotkeyManager
 from voice_input.injector import TextInjector
+from voice_input.keyring_helper import get_secret
 from voice_input.overlay import OverlayWidget
 from voice_input.postprocess.llm import LLMRefiner
 from voice_input.postprocess.pipeline import ScenePipeline
@@ -29,6 +33,31 @@ from voice_input.tray import TrayManager
 log = logging.getLogger(__name__)
 
 MIN_AUDIO_SAMPLES = 1600  # 0.1s at 16kHz
+
+# Centralized task tracking to prevent unhandled-exception warnings
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _safe_create_task(coro) -> asyncio.Task | None:
+    """Schedule *coro* as a background task, guarding against a missing event loop.
+
+    Returns the Task on success, or None if no loop is running (e.g. plain
+    QApplication without qasync).  Finished tasks auto-remove themselves from
+    the tracking set.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is None:
+        log.debug("No running event loop; cannot schedule %s", coro)
+        return None
+
+    task = loop.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 class AppState(enum.Enum):
@@ -107,11 +136,7 @@ class AppController(QObject):
             self._llm = None
             self._pipeline = None
             return
-        try:
-            import keyring
-            api_key = keyring.get_password("voice-input", "llm-api-key") or ""
-        except Exception:
-            api_key = ""
+        api_key = get_secret("llm-api-key")
         self._llm = LLMRefiner(
             api_base=self._config["llm"]["api_base"],
             api_key=api_key,
@@ -139,7 +164,7 @@ class AppController(QObject):
         if not ok:
             log.warning("Hotkey registration failed; use tray menu.")
         if self._hotkey.mode == "hold":
-            asyncio.create_task(self._hotkey.run_evdev_loop())
+            _safe_create_task(self._hotkey.run_evdev_loop())
         await self._registry.start()
         log.info(
             "Voice Input started (backend=%s)",
@@ -188,7 +213,7 @@ class AppController(QObject):
             self._send_notification("Voice Input", f"Cannot create session: {e}")
             return
 
-        self._drain_audio_queue()
+        self._drain_queue(self._whisper_queue)
         self._audio.start()
         self._viz_timer.start()
         self._overlay.update_text("")
@@ -202,7 +227,7 @@ class AppController(QObject):
         self._audio.stop()
         self._viz_timer.stop()
 
-        audio_buffer = self._drain_audio_queue()
+        audio_buffer = self._drain_queue(self._whisper_queue)
         log.info("Audio buffer: %d samples (min=%d)", len(audio_buffer), MIN_AUDIO_SAMPLES)
         if self._current_session is not None and len(audio_buffer) > 0:
             self._current_session.push_audio(audio_buffer)
@@ -218,18 +243,24 @@ class AppController(QObject):
         self._set_state(AppState.TRANSCRIBING)
         self._overlay.update_text("Transcribing...")
         log.info("Starting transcription...")
-        asyncio.ensure_future(self._finish_and_inject())
+        _safe_create_task(self._finish_and_inject())
 
-    def _drain_audio_queue(self) -> np.ndarray:
+    def _drain_queue(self, q: queue.Queue) -> np.ndarray:
+        """Drain all chunks from a queue and concatenate them."""
         chunks: list[np.ndarray] = []
         while True:
             try:
-                chunks.append(self._whisper_queue.get_nowait())
+                chunks.append(q.get_nowait())
             except queue.Empty:
                 break
         if not chunks:
             return np.array([], dtype=np.int16)
         return np.concatenate(chunks)
+
+    def _abort_to_idle(self) -> None:
+        """Animate overlay exit and return to IDLE state."""
+        self._overlay.animate_exit(on_finished=self._overlay.hide)
+        self._set_state(AppState.IDLE)
 
     async def _finish_and_inject(self) -> None:
         log.info("_finish_and_inject called")
@@ -246,20 +277,17 @@ class AppController(QObject):
         except RecognitionError as e:
             log.warning("recognition error: %s", e)
             self._send_notification("Voice Input", e.user_message)
-            self._overlay.animate_exit(on_finished=self._overlay.hide)
-            self._set_state(AppState.IDLE)
+            self._abort_to_idle()
             return
         except Exception as e:
             log.exception("session.finish unexpected error")
             self._send_notification("Voice Input", f"Recognition failed: {str(e)[:80]}")
-            self._overlay.animate_exit(on_finished=self._overlay.hide)
-            self._set_state(AppState.IDLE)
+            self._abort_to_idle()
             return
 
         if not text:
             self._send_notification("Voice Input", "No speech detected")
-            self._overlay.animate_exit(on_finished=self._overlay.hide)
-            self._set_state(AppState.IDLE)
+            self._abort_to_idle()
             return
 
         if self._pipeline is not None:
@@ -279,7 +307,6 @@ class AppController(QObject):
             return
 
         def _do_inject() -> None:
-            import threading
             threading.Thread(
                 target=self._injector.inject, args=(text,), daemon=True
             ).start()
@@ -289,15 +316,9 @@ class AppController(QObject):
         )
 
     def _update_visualization(self) -> None:
-        chunks: list[np.ndarray] = []
-        while True:
-            try:
-                chunks.append(self._viz_queue.get_nowait())
-            except queue.Empty:
-                break
-        if not chunks:
+        data = self._drain_queue(self._viz_queue)
+        if len(data) == 0:
             return
-        data = np.concatenate(chunks)
         rms = compute_rms(data)
         self._overlay.update_rms(rms)
 
@@ -316,7 +337,7 @@ class AppController(QObject):
             return
         self._config.setdefault("stt", {})["backend"] = backend_name
         save_config(self._config)
-        asyncio.ensure_future(self._registry.synchronize(self._config))
+        _safe_create_task(self._registry.synchronize(self._config))
         log.info("Backend -> %s (reload scheduled)", backend_name)
 
     @pyqtSlot(QAction)
@@ -340,7 +361,7 @@ class AppController(QObject):
             self._init_llm()
         elif not enabled:
             if self._llm:
-                asyncio.ensure_future(self._llm.close())
+                _safe_create_task(self._llm.close())
             self._llm = None
             self._pipeline = None
 
@@ -349,20 +370,19 @@ class AppController(QObject):
         dialog = SettingsDialog(self._config)
         if dialog.exec():
             if self._llm:
-                asyncio.ensure_future(self._llm.close())
+                _safe_create_task(self._llm.close())
             self._init_llm()
-            asyncio.ensure_future(self._registry.synchronize(self._config))
+            _safe_create_task(self._registry.synchronize(self._config))
 
     @pyqtSlot()
     def _on_about(self) -> None:
         QMessageBox.about(
             None, "Voice Input",
-            "Voice Input for KDE Plasma 6\nVersion 0.2.0\n\nSpeech-to-text via sherpa-onnx.",
+            f"Voice Input for KDE Plasma 6\nVersion {__version__}\n\nSpeech-to-text via sherpa-onnx.",
         )
 
     def _send_notification(self, title: str, body: str) -> None:
         try:
-            import subprocess
             subprocess.run(
                 ["notify-send", title, body, "-a", "Voice Input"], timeout=5,
             )

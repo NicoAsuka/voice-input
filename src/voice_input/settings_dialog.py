@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -25,9 +24,7 @@ from PyQt6.QtWidgets import (
 
 from voice_input.asr.model_manager import REGISTRY
 from voice_input.config import AppConfig, save_config
-
-if TYPE_CHECKING:
-    from PyQt6.QtWidgets import QWidget
+from voice_input.keyring_helper import get_secret, set_secret
 
 log = logging.getLogger(__name__)
 
@@ -209,48 +206,20 @@ class SettingsDialog(QDialog):
             self._sherpa_provider_combo.setCurrentIndex(idx)
 
     def _load_api_key(self) -> None:
-        try:
-            import keyring
-            key = keyring.get_password("voice-input", "llm-api-key")
-            if key:
-                self._api_key_edit.setText(key)
-        except Exception as e:
-            log.debug("Could not load API key from keyring: %s", e)
+        key = get_secret("llm-api-key")
+        if key:
+            self._api_key_edit.setText(key)
 
     def _save_api_key(self, key: str) -> None:
-        try:
-            import keyring
-            if key:
-                keyring.set_password("voice-input", "llm-api-key", key)
-            else:
-                keyring.delete_password("voice-input", "llm-api-key")
-        except Exception as e:
-            log.warning("Could not save API key to keyring: %s", e)
+        set_secret("llm-api-key", key)
 
     def _load_keyring_field(self, field: QLineEdit, key: str) -> None:
-        try:
-            import keyring
-
-            value = keyring.get_password("voice-input", key)
-            if value:
-                field.setText(value)
-        except Exception as e:
-            log.debug("Could not load %s from keyring: %s", key, e)
+        value = get_secret(key)
+        if value:
+            field.setText(value)
 
     def _save_keyring_field(self, field: QLineEdit, key: str) -> None:
-        try:
-            import keyring
-
-            value = field.text().strip()
-            if value:
-                keyring.set_password("voice-input", key, value)
-            else:
-                try:
-                    keyring.delete_password("voice-input", key)
-                except Exception:
-                    pass
-        except Exception as e:
-            log.warning("Could not save %s to keyring: %s", key, e)
+        set_secret(key, field.text().strip())
 
     def _toggle_key_visibility(self, checked: bool) -> None:
         if checked:

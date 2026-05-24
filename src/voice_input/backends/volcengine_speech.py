@@ -243,24 +243,6 @@ class VolcengineSpeechBackend(TranscriptionBackend):
 
         return data, flags in (_FLAG_FINAL_NO_SEQUENCE, _FLAG_FINAL_NEG_SEQUENCE)
 
-    def _build_server_response(self, payload: dict[str, Any], final: bool) -> bytes:
-        compressed = gzip.compress(json.dumps(payload).encode("utf-8"))
-        header = bytes(
-            [
-                (_PROTOCOL_VERSION << 4) | _HEADER_SIZE_WORDS,
-                (_MSG_FULL_SERVER_RESPONSE << 4)
-                | (_FLAG_FINAL_NEG_SEQUENCE if final else _FLAG_POS_SEQUENCE),
-                (_SERIALIZATION_JSON << 4) | _COMPRESSION_GZIP,
-                0x00,
-            ]
-        )
-        return header + struct.pack(">iI", -1 if final else 1, len(compressed)) + compressed
-
-    def _parse_server_payload_like_client_request(self, frame: bytes) -> dict[str, Any]:
-        size = struct.unpack(">I", frame[4:8])[0]
-        payload = gzip.decompress(frame[8 : 8 + size])
-        return json.loads(payload.decode("utf-8"))
-
     def _extract_text(self, payload: dict[str, Any]) -> str:
         result = payload.get("result")
         if isinstance(result, dict):

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import logging
-import struct
 import wave
 
 import httpx
@@ -69,9 +68,6 @@ class OpenAIWhisperBackend(TranscriptionBackend):
         except Exception as e:
             log.error("OpenAI Whisper API error: %s", e)
             return ""
-
-    async def cleanup(self) -> None:
-        await self._client.aclose()
 
     def is_ready(self) -> bool:
         return bool(self._client)

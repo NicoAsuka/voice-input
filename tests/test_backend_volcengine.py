@@ -1,4 +1,7 @@
 import pytest
+import gzip
+import json
+import struct
 import numpy as np
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,7 +11,26 @@ from voice_input.backends.volcengine_speech import (
     VOLCENGINE_STREAM_URL,
     VolcengineSpeechBackend,
     _VolcSession,
+    _MSG_FULL_SERVER_RESPONSE,
+    _FLAG_POS_SEQUENCE,
+    _FLAG_FINAL_NEG_SEQUENCE,
+    _SERIALIZATION_JSON,
+    _COMPRESSION_GZIP,
+    _PROTOCOL_VERSION,
+    _HEADER_SIZE_WORDS,
 )
+
+
+def _make_server_response(payload: dict, final: bool) -> bytes:
+    """Build a volcengine server response frame (replaces removed backend method)."""
+    compressed = gzip.compress(json.dumps(payload).encode("utf-8"))
+    header = bytes([
+        (_PROTOCOL_VERSION << 4) | _HEADER_SIZE_WORDS,
+        (_MSG_FULL_SERVER_RESPONSE << 4) | (_FLAG_FINAL_NEG_SEQUENCE if final else _FLAG_POS_SEQUENCE),
+        (_SERIALIZATION_JSON << 4) | _COMPRESSION_GZIP,
+        0x00,
+    ])
+    return header + struct.pack(">iI", -1 if final else 1, len(compressed)) + compressed
 
 
 def test_is_streaming_returns_false():
@@ -29,8 +51,8 @@ async def test_transcribe_sends_correct_request():
         def __init__(self):
             self.sent = []
             self.responses = [
-                backend._build_server_response({"result": {"text": ""}}, final=False),
-                backend._build_server_response(
+                _make_server_response({"result": {"text": ""}}, final=False),
+                _make_server_response(
                     {"result": {"text": "transcribed text"}}, final=True
                 ),
             ]
@@ -59,7 +81,11 @@ async def test_transcribe_sends_correct_request():
     assert connect.call_args.args[0]["X-Api-Resource-Id"] == "volc.test.resource"
     assert connect.call_args.args[1] == VOLCENGINE_STREAM_URL
 
-    request = backend._parse_server_payload_like_client_request(ws.sent[0])
+    # Parse the sent client request to verify audio config
+    sent_frame = ws.sent[0]
+    payload_size = struct.unpack(">I", sent_frame[4:8])[0]
+    payload = gzip.decompress(sent_frame[8 : 8 + payload_size])
+    request = json.loads(payload.decode("utf-8"))
     assert request["audio"] == {
         "format": "pcm",
         "codec": "raw",
@@ -94,7 +120,7 @@ def test_sign_request_produces_headers():
 
 def test_parse_server_response_decompresses_json():
     backend = VolcengineSpeechBackend()
-    frame = backend._build_server_response(
+    frame = _make_server_response(
         {"result": {"text": "最终文本"}},
         final=True,
     )

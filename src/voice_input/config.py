@@ -124,8 +124,27 @@ def _toml_value(v: object) -> str:
         return str(v)
     if isinstance(v, str):
         if "\n" in v or '"' in v:
-            escaped = v.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-            return f'"""{escaped}"""'
+            # TOML multiline basic string: escape \ and " (including """ sequences)
+            chars = list(v)
+            parts: list[str] = []
+            i = 0
+            while i < len(chars):
+                if chars[i] == "\\":
+                    parts.append("\\\\")
+                    i += 1
+                elif chars[i : i + 3] == ['"', '"', '"']:
+                    parts.append('\\"\\"\\"')
+                    i += 3
+                elif chars[i] == '"':
+                    parts.append('\\"')
+                    i += 1
+                else:
+                    parts.append(chars[i])
+                    i += 1
+            return '"""' + "".join(parts) + '"""'
+        if "\\" in v:
+            # TOML basic string: backslash must be escaped
+            return '"' + v.replace("\\", "\\\\") + '"'
         return f'"{v}"'
     return str(v)
 

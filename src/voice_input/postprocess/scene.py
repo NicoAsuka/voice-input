@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from voice_input.postprocess.llm import SYSTEM_PROMPT
+
 
 @dataclass(frozen=True)
 class Scene:
@@ -13,19 +15,7 @@ class Scene:
 DEFAULT_SCENE = Scene(
     id="default",
     name="默认",
-    prompt=(
-        "You are a speech recognition error corrector. ONLY fix obvious transcription errors, especially:\n"
-        "- Chinese homophone errors from ASR\n"
-        "- English technical terms mis-transcribed as Chinese phonetics "
-        "(e.g. 配森→Python, 杰森→JSON, 锐克特→React, 瑞迪斯→Redis, 多克→Docker, 哥拉格→GraphQL)\n"
-        "- Mixed Chinese-English where English terms got corrupted\n"
-        "Rules (HARD):\n"
-        "- DO NOT rewrite, polish, paraphrase, or expand anything\n"
-        "- DO NOT change punctuation unless it's clearly wrong\n"
-        "- DO NOT add explanation, quotes, or markdown\n"
-        "- If the input looks correct, return it EXACTLY as-is\n"
-        "- Return ONLY the corrected text."
-    ),
+    prompt=SYSTEM_PROMPT,
 )
 
 

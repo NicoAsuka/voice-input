@@ -51,13 +51,6 @@ async def test_transcribe_returns_empty_on_error():
     assert result == ""
 
 
-@pytest.mark.asyncio
-async def test_cleanup_closes_client():
-    backend = OpenAIWhisperBackend(api_base="https://api.openai.com/v1", api_key="sk-test", model="whisper-1")
-    with patch.object(backend._client, "aclose", new_callable=AsyncMock) as mock_close:
-        await backend.cleanup()
-    mock_close.assert_called_once()
-
 
 # --- New Session interface tests ---
 

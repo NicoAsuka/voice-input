@@ -41,11 +41,21 @@ class TextInjector:
     """
 
     def __init__(self, paste_method: str = "ctrl_v") -> None:
-        self.method = self._detect_method()
         self._has_wl_copy = bool(shutil.which("wl-copy"))
         self._has_wl_paste = bool(shutil.which("wl-paste"))
         self._has_ydotool = bool(shutil.which("ydotool"))
         self._paste_keys = PASTE_METHODS.get(paste_method, PASTE_METHODS["ctrl_v"])
+
+        # Expose detected method for diagnostics / tests
+        if shutil.which("wtype"):
+            self.method = InjectionMethod.WTYPE
+        elif self._has_ydotool:
+            self.method = InjectionMethod.YDOTOOL
+        elif self._has_wl_copy and self._has_wl_paste:
+            self.method = InjectionMethod.CLIPBOARD
+        else:
+            self.method = InjectionMethod.NONE
+
         if self._has_wl_copy and self._has_ydotool:
             log.info("Text injection: wl-copy + ydotool (paste method: %s)", paste_method)
         else:
@@ -53,16 +63,6 @@ class TextInjector:
                 "Text injection may not work: wl-copy=%s ydotool=%s",
                 self._has_wl_copy, self._has_ydotool,
             )
-
-    @staticmethod
-    def _detect_method() -> InjectionMethod:
-        if shutil.which("wtype"):
-            return InjectionMethod.WTYPE
-        if shutil.which("ydotool"):
-            return InjectionMethod.YDOTOOL
-        if shutil.which("wl-copy") and shutil.which("wl-paste"):
-            return InjectionMethod.CLIPBOARD
-        return InjectionMethod.NONE
 
     def inject(self, text: str) -> bool:
         """Inject text into the focused application via clipboard paste."""
@@ -92,31 +92,6 @@ class TextInjector:
         if ok:
             log.info("Text injected (%d chars)", len(text))
         return ok
-
-    def _build_inject_command(self, text: str) -> list[str]:
-        return ["wtype", "--", text]
-
-    def _build_clipboard_commands(self, text: str) -> tuple[list[str], list[str]]:
-        return ["wl-copy", "--", text], ["wtype", "-M", "ctrl", "v", "-m", "ctrl"]
-
-    def _save_im_state(self) -> str:
-        """Detect current input method state."""
-        if shutil.which("fcitx5-remote"):
-            try:
-                result = subprocess.run(
-                    ["fcitx5-remote"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                )
-                code = result.stdout.strip()
-                if code == "2":
-                    return "active"
-                if code == "1":
-                    return "inactive"
-            except Exception as e:
-                log.debug("fcitx5-remote query failed: %s", e)
-        return "unknown"
 
     def _get_clipboard(self) -> str | None:
         if not self._has_wl_paste:

@@ -41,15 +41,15 @@ def test_llm_toggle_off_closes_existing_refiner():
     controller._config = {"postprocess": {"enabled": True}}
 
     with patch("voice_input.app.save_config"), patch(
-        "voice_input.app.asyncio.ensure_future"
-    ) as ensure_future:
+        "voice_input.app._safe_create_task"
+    ) as create_task:
         AppController._on_llm_toggled(controller, False)
 
     assert controller._llm_enabled is False
     assert controller._llm is None
     assert controller._pipeline is None
     refiner.close.assert_called_once()
-    ensure_future.assert_called_once()
+    create_task.assert_called_once()
 
 
 def test_backend_changed_triggers_synchronize():
@@ -60,12 +60,12 @@ def test_backend_changed_triggers_synchronize():
     action.data.return_value = "openai"
 
     with patch("voice_input.app.save_config"), patch(
-        "voice_input.app.asyncio.ensure_future"
-    ) as ef:
+        "voice_input.app._safe_create_task"
+    ) as ct:
         AppController._on_backend_changed(controller, action)
 
     assert controller._config["stt"]["backend"] == "openai"
-    ef.assert_called_once()
+    ct.assert_called_once()
 
 
 def test_scene_changed_updates_config():

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -129,10 +128,6 @@ class HotkeyManager(QObject):
         log.info("KGlobalAccel shortcut pressed: %s/%s", component_unique, shortcut_unique)
         if shortcut_unique == "toggle-recording":
             self.recording_requested.emit()
-
-    def _on_shortcut_triggered(self, *args) -> None:
-        log.info("Hotkey triggered via KGlobalAccel")
-        self.recording_requested.emit()
 
     def _register_evdev(self) -> bool:
         """Register via evdev for press-and-hold mode."""

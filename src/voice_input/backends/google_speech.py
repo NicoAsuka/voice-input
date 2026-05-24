@@ -98,9 +98,6 @@ class GoogleSpeechBackend(TranscriptionBackend):
             log.error("Google Speech API error: %s", e)
             return ""
 
-    async def cleanup(self) -> None:
-        await self._client.aclose()
-
     def is_ready(self) -> bool:
         return bool(self.credentials_path)
 
