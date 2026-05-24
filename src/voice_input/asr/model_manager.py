@@ -8,8 +8,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
-
 from voice_input.config import xdg_cache_dir
 
 log = logging.getLogger(__name__)
@@ -81,21 +79,24 @@ VAD_META = ModelMeta(
 )
 
 
-async def _download_to_path(
-    client: httpx.AsyncClient, url: str, dest: Path, expected_sha256: str
+def _download_to_path_sync(
+    url: str, dest: Path, expected_sha256: str
 ) -> None:
-    """下载到临时文件 -> SHA256 校验 -> 原子 rename。"""
+    """同步下载到临时文件 -> SHA256 校验 -> 原子 rename。在 executor 中调用。"""
     log.info("Downloading %s -> %s", url, dest)
+    import urllib.request
+
     with tempfile.NamedTemporaryFile(delete=False, dir=dest.parent, suffix=".part") as tmp:
         tmp_path = Path(tmp.name)
     try:
-        async with client.stream("GET", url, follow_redirects=True) as resp:
-            resp.raise_for_status()
-            sha = hashlib.sha256()
-            with open(tmp_path, "wb") as f:
-                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
-                    f.write(chunk)
-                    sha.update(chunk)
+        sha = hashlib.sha256()
+        with urllib.request.urlopen(url) as resp, open(tmp_path, "wb") as f:
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                sha.update(chunk)
 
         if expected_sha256:
             actual = sha.hexdigest()
@@ -128,12 +129,14 @@ async def _download_meta_to_dir(meta: ModelMeta, target_dir: Path) -> dict[str, 
         )
     )
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            for role, filename in meta.files.items():
-                url = meta.base_url + filename
-                dest = staging_dir / filename
-                expected = meta.sha256.get(role, "")
-                await _download_to_path(client, url, dest, expected)
+        loop = asyncio.get_running_loop()
+        for role, filename in meta.files.items():
+            url = meta.base_url + filename
+            dest = staging_dir / filename
+            expected = meta.sha256.get(role, "")
+            await loop.run_in_executor(
+                None, _download_to_path_sync, url, dest, expected
+            )
 
         if _meta_files_installed(meta, target_dir):
             shutil.rmtree(staging_dir, ignore_errors=True)

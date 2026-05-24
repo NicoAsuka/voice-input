@@ -203,6 +203,7 @@ class AppController(QObject):
         self._viz_timer.stop()
 
         audio_buffer = self._drain_audio_queue()
+        log.info("Audio buffer: %d samples (min=%d)", len(audio_buffer), MIN_AUDIO_SAMPLES)
         if self._current_session is not None and len(audio_buffer) > 0:
             self._current_session.push_audio(audio_buffer)
 
@@ -216,6 +217,7 @@ class AppController(QObject):
 
         self._set_state(AppState.TRANSCRIBING)
         self._overlay.update_text("Transcribing...")
+        log.info("Starting transcription...")
         asyncio.ensure_future(self._finish_and_inject())
 
     def _drain_audio_queue(self) -> np.ndarray:
@@ -230,13 +232,16 @@ class AppController(QObject):
         return np.concatenate(chunks)
 
     async def _finish_and_inject(self) -> None:
+        log.info("_finish_and_inject called")
         session = self._current_session
         self._current_session = None
         if session is None:
+            log.warning("_finish_and_inject: session is None")
             self._set_state(AppState.IDLE)
             return
 
         try:
+            log.info("Calling session.finish()...")
             text = await session.finish()
         except RecognitionError as e:
             log.warning("recognition error: %s", e)
