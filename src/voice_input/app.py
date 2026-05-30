@@ -8,6 +8,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 
 import numpy as np
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
@@ -38,12 +39,21 @@ MIN_AUDIO_SAMPLES = 1600  # 0.1s at 16kHz
 _background_tasks: set[asyncio.Task] = set()
 
 
-def _safe_create_task(coro) -> asyncio.Task | None:
+def _on_task_done(task: asyncio.Task) -> None:
+    """Log unhandled exceptions from background tasks and remove from tracking."""
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("Background task %s raised: %s", task.get_name(), exc, exc_info=exc)
+
+
+def _safe_create_task(coro, *, name: str | None = None) -> asyncio.Task | None:
     """Schedule *coro* as a background task, guarding against a missing event loop.
 
     Returns the Task on success, or None if no loop is running (e.g. plain
-    QApplication without qasync).  Finished tasks auto-remove themselves from
-    the tracking set.
+    QApplication without qasync).  Unhandled exceptions are logged.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -54,9 +64,9 @@ def _safe_create_task(coro) -> asyncio.Task | None:
         log.debug("No running event loop; cannot schedule %s", coro)
         return None
 
-    task = loop.create_task(coro)
+    task = loop.create_task(coro, name=name or "")
     _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_on_task_done)
     return task
 
 
@@ -80,7 +90,7 @@ def _can_transition(curr: AppState, target: AppState) -> bool:
 
 
 class AppController(QObject):
-    state_changed = pyqtSignal(str)
+    state_changed = pyqtSignal(object)  # AppState enum
 
     def __init__(self, config: AppConfig, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -91,12 +101,16 @@ class AppController(QObject):
         # Audio
         self._whisper_queue: queue.Queue = queue.Queue(maxsize=200)
         self._viz_queue: queue.Queue = queue.Queue(maxsize=50)
+        audio_cfg = config.get("audio", {})
         self._audio = AudioRecorder(
             whisper_queue=self._whisper_queue,
             viz_queue=self._viz_queue,
-            device=config["audio"]["device"],
-            sample_rate=config["audio"]["sample_rate"],
+            device=audio_cfg.get("device", "default"),
+            sample_rate=audio_cfg.get("sample_rate", 16000),
         )
+        self._silence_threshold: float = audio_cfg.get("silence_threshold", 0.01)
+        self._silence_timeout_ms: int = audio_cfg.get("silence_timeout_ms", 2000)
+        self._silence_start_ms: float = 0.0  # monotonic time when silence began
 
         self._registry = BackendRegistry(config, factory=create_backend)
         self._registry.add_state_listener(self._on_registry_state)
@@ -156,6 +170,7 @@ class AppController(QObject):
         self._tray.llm_toggle.toggled.connect(self._on_llm_toggled)
         self._tray.llm_settings_action.triggered.connect(self._on_open_settings)
         self._tray.about_action.triggered.connect(self._on_about)
+        self._tray.prefs_action.triggered.connect(self._on_open_settings)
         self.state_changed.connect(self._tray.set_state)
 
     async def start(self) -> None:
@@ -176,7 +191,7 @@ class AppController(QObject):
             log.warning("Invalid transition: %s -> %s", self._state, new_state)
             return
         self._state = new_state
-        self.state_changed.emit(new_state.value)
+        self.state_changed.emit(new_state)
 
     def _on_registry_state(self, state: RegistryState, error: str | None) -> None:
         log.info("registry state -> %s (error=%s)", state.value, error)
@@ -214,7 +229,16 @@ class AppController(QObject):
             return
 
         self._drain_queue(self._whisper_queue)
-        self._audio.start()
+        self._silence_start_ms = 0.0
+        try:
+            self._audio.start()
+        except Exception as e:
+            log.exception("AudioRecorder.start() failed")
+            self._send_notification("Voice Input", f"Microphone error: {e}")
+            if self._current_session:
+                self._current_session.cancel()
+                self._current_session = None
+            return
         self._viz_timer.start()
         self._overlay.update_text("")
         self._overlay.show()
@@ -307,12 +331,17 @@ class AppController(QObject):
             return
 
         def _do_inject() -> None:
-            threading.Thread(
-                target=self._injector.inject, args=(text,), daemon=True
-            ).start()
+            ok = self._injector.inject(text)
+            if not ok:
+                error = self._injector.last_error or "unknown error"
+                log.warning("Text injection failed: %s", error)
+                self._send_notification("Voice Input", f"Injection failed: {error}")
+
+        def _start_inject_thread() -> None:
+            threading.Thread(target=_do_inject, daemon=True).start()
 
         self._overlay.animate_exit(
-            on_finished=lambda: (self._overlay.hide(), _do_inject())
+            on_finished=lambda: (self._overlay.hide(), _start_inject_thread())
         )
 
     def _update_visualization(self) -> None:
@@ -321,6 +350,19 @@ class AppController(QObject):
             return
         rms = compute_rms(data)
         self._overlay.update_rms(rms)
+
+        # Auto-stop on sustained silence
+        if self._silence_timeout_ms > 0 and self._state == AppState.RECORDING:
+            now = time.monotonic()
+            if rms < self._silence_threshold:
+                if self._silence_start_ms == 0.0:
+                    self._silence_start_ms = now
+                elif (now - self._silence_start_ms) * 1000 >= self._silence_timeout_ms:
+                    log.info("Auto-stopping: silence detected for %dms", self._silence_timeout_ms)
+                    self._silence_start_ms = 0.0
+                    self._on_stop_recording()
+            else:
+                self._silence_start_ms = 0.0
 
     @pyqtSlot(QAction)
     def _on_language_changed(self, action: QAction) -> None:
@@ -389,6 +431,36 @@ class AppController(QObject):
         except Exception as e:
             log.debug("Notification failed: %s", e)
 
+    async def shutdown(self) -> None:
+        """Clean up all resources before application exit."""
+        log.info("AppController shutting down...")
+        # Stop recording if active
+        if self._state == AppState.RECORDING:
+            self._audio.stop()
+            self._viz_timer.stop()
+
+        # Cancel all background tasks
+        for task in list(_background_tasks):
+            task.cancel()
+        if _background_tasks:
+            await asyncio.gather(*_background_tasks, return_exceptions=True)
+
+        # Close LLM client
+        if self._llm is not None:
+            try:
+                await self._llm.close()
+            except Exception:
+                log.debug("LLM close failed during shutdown", exc_info=True)
+            self._llm = None
+
+        # Shutdown backend registry
+        await self._registry.shutdown()
+
+        # Unregister hotkey
+        self._hotkey.unregister()
+
+        log.info("AppController shutdown complete")
+
 
 def run_app() -> None:
     logging.basicConfig(
@@ -410,6 +482,7 @@ def run_app() -> None:
         loop = None
 
     controller = AppController(config)
+    app.aboutToQuit.connect(lambda: _safe_create_task(controller.shutdown(), name="shutdown"))
     if loop is not None:
         with loop:
             loop.run_until_complete(controller.start())

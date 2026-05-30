@@ -104,6 +104,12 @@ def _download_to_path_sync(
                 raise RuntimeError(
                     f"SHA256 mismatch for {url}: expected {expected_sha256}, got {actual}"
                 )
+        else:
+            log.warning(
+                "SHA256 hash not configured for %s — skipping integrity check. "
+                "Downloaded file size: %d bytes.",
+                dest.name, tmp_path.stat().st_size,
+            )
         tmp_path.replace(dest)
     except BaseException:
         tmp_path.unlink(missing_ok=True)

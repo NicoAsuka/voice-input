@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QWidget
 
+    from voice_input.app import AppState
     from voice_input.postprocess.scene import Scene
 
 log = logging.getLogger(__name__)
@@ -209,17 +210,18 @@ class TrayManager(QSystemTrayIcon):
     def about_action(self) -> QAction:
         return self._about_action
 
-    def set_state(self, state: str) -> None:
-        """Update tray state: 'Idle', 'Recording', 'Transcribing', 'Refining'."""
-        self._state = state
-        self._status_action.setText(f"Status: {state}")
-        self.setToolTip(f"Voice Input — {state}")
+    def set_state(self, state: AppState) -> None:
+        """Update tray state from AppState enum."""
+        from voice_input.app import AppState as AS
+        self._state = state.value
+        self._status_action.setText(f"Status: {state.value}")
+        self.setToolTip(f"Voice Input — {state.value}")
 
-        if state == "Recording":
+        if state == AS.RECORDING:
             self._toggle_action.setText("Stop Recording")
             self._toggle_action.setEnabled(True)
             self.setIcon(self._icon_recording)
-        elif state in ("Transcribing", "Refining"):
+        elif state in (AS.TRANSCRIBING, AS.REFINING):
             self._toggle_action.setText("Stop Recording")
             self._toggle_action.setEnabled(False)
         else:

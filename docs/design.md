@@ -1,5 +1,13 @@
 # Voice Input for KDE Plasma 6 (Wayland) - Design Spec
 
+> **⚠ ARCHIVED — 2026-04-17 original, superseded by implementation.**
+> This document reflects the initial design. The actual implementation differs:
+> - STT backend: sherpa-onnx (local) replaces faster-whisper/Whisper
+> - Text injection: wl-copy + ydotool replaces wtype
+> - Input method handling (fcitx5/ibus) is not implemented
+> - Layer Shell is not used; Qt fallback flags are sufficient
+> - See README.md for current usage instructions.
+
 **Date:** 2026-04-17
 **Location:** `/home/Nico/Project/voice-input/`
 **Status:** Approved

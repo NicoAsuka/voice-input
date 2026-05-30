@@ -43,7 +43,6 @@ DEFAULT_CONFIG: dict = {
         },
     },
     "llm": {
-        "enabled": True,
         "api_base": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
     },
@@ -79,6 +78,8 @@ DEFAULT_CONFIG: dict = {
     "audio": {
         "device": "default",
         "sample_rate": 16000,
+        "silence_threshold": 0.01,
+        "silence_timeout_ms": 2000,
     },
     "ui": {
         "overlay_margin_bottom": 80,
@@ -196,7 +197,7 @@ AppConfig = dict  # type alias for clarity
 
 
 def _migrate_legacy_local_config(cfg: dict, user_cfg: dict) -> dict:
-    """Map old [stt] backend=local / [stt.local] / [whisper] to new sherpa backend."""
+    """Map old config keys to current schema."""
     user_stt = user_cfg.get("stt", {})
     # Old "local" backend -> "sherpa"
     if user_stt.get("backend") == "local":
@@ -206,6 +207,14 @@ def _migrate_legacy_local_config(cfg: dict, user_cfg: dict) -> dict:
     if isinstance(legacy_local, dict) and "language" in legacy_local:
         cfg.setdefault("stt", {}).setdefault("language", legacy_local["language"])
     # Old [whisper] section -> ignore (whisper backend removed)
+
+    # Old llm.enabled -> postprocess.enabled
+    user_llm = user_cfg.get("llm", {})
+    if isinstance(user_llm, dict) and "enabled" in user_llm:
+        user_pp = user_cfg.get("postprocess", {})
+        if not isinstance(user_pp, dict) or "enabled" not in user_pp:
+            cfg.setdefault("postprocess", {})["enabled"] = user_llm["enabled"]
+
     return cfg
 
 

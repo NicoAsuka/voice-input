@@ -1,4 +1,4 @@
-.PHONY: install-deps venv run install uninstall clean package
+.PHONY: install-deps venv run install uninstall clean package test
 
 VENV_DIR = $(HOME)/.local/share/voice-input/venv
 PYTHON = $(VENV_DIR)/bin/python
@@ -8,13 +8,15 @@ DESKTOP_DIR = $(HOME)/.local/share/applications
 
 install-deps:
 	sudo pacman -S --needed python python-pyqt6 python-sounddevice \
-		qt6-wayland wl-clipboard wtype libnotify fcitx5
+		qt6-wayland wl-clipboard ydotool libnotify python-evdev
 
 venv:
 	python -m venv $(VENV_DIR)
 	$(VENV_DIR)/bin/pip install --upgrade pip
-	$(VENV_DIR)/bin/pip install faster-whisper dbus-next httpx qasync keyring sounddevice PyQt6
-	$(VENV_DIR)/bin/pip install -e .
+	$(VENV_DIR)/bin/pip install -e ".[dev]"
+
+test:
+	python -m pytest tests/ -q
 
 run:
 	PYTHONPATH=$(SRC_DIR) python -m voice_input

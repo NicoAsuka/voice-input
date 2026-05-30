@@ -19,7 +19,6 @@ def test_default_config_has_required_sections():
     assert cfg["stt"]["sherpa"]["model_id"] == "sherpa-onnx-paraformer-zh-2024-03-09"
     assert cfg["stt"]["sherpa"]["vad_enabled"] is True
     assert cfg["stt"]["language"] == "zh"
-    assert cfg["llm"]["enabled"] is True
     assert cfg["llm"]["api_base"] == "https://api.openai.com/v1"
     assert cfg["llm"]["model"] == "gpt-4o-mini"
     assert cfg["audio"]["device"] == "default"
@@ -63,7 +62,7 @@ def test_load_config_merges_partial_file(tmp_path):
     assert cfg["hotkey"]["mode"] == "hold"
     # Default values still present
     assert cfg["stt"]["sherpa"]["model_id"] == "sherpa-onnx-paraformer-zh-2024-03-09"
-    assert cfg["llm"]["enabled"] is True
+    assert cfg["postprocess"]["enabled"] is True
 
 
 def test_load_config_migrates_legacy_local_to_sherpa(tmp_path):

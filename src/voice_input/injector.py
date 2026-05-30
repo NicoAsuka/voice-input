@@ -26,9 +26,8 @@ PASTE_METHODS = {
 
 
 class InjectionMethod(enum.Enum):
-    WTYPE = "wtype"
-    YDOTOOL = "ydotool"
-    CLIPBOARD = "clipboard"
+    """Actual injection execution path used by inject()."""
+    CLIPBOARD_PASTE = "clipboard_paste"  # wl-copy + ydotool key
     NONE = "none"
 
 
@@ -45,31 +44,39 @@ class TextInjector:
         self._has_wl_paste = bool(shutil.which("wl-paste"))
         self._has_ydotool = bool(shutil.which("ydotool"))
         self._paste_keys = PASTE_METHODS.get(paste_method, PASTE_METHODS["ctrl_v"])
-
-        # Expose detected method for diagnostics / tests
-        if shutil.which("wtype"):
-            self.method = InjectionMethod.WTYPE
-        elif self._has_ydotool:
-            self.method = InjectionMethod.YDOTOOL
-        elif self._has_wl_copy and self._has_wl_paste:
-            self.method = InjectionMethod.CLIPBOARD
-        else:
-            self.method = InjectionMethod.NONE
+        self.last_error: str = ""
 
         if self._has_wl_copy and self._has_ydotool:
+            self.method = InjectionMethod.CLIPBOARD_PASTE
             log.info("Text injection: wl-copy + ydotool (paste method: %s)", paste_method)
         else:
+            self.method = InjectionMethod.NONE
             log.warning(
-                "Text injection may not work: wl-copy=%s ydotool=%s",
+                "Text injection unavailable: wl-copy=%s ydotool=%s",
                 self._has_wl_copy, self._has_ydotool,
             )
 
+    def is_ready(self) -> bool:
+        """Return True if injection can work (all required tools available)."""
+        return self.method == InjectionMethod.CLIPBOARD_PASTE
+
     def inject(self, text: str) -> bool:
-        """Inject text into the focused application via clipboard paste."""
+        """Inject text into the focused application via clipboard paste.
+
+        On failure, sets self.last_error with a human-readable reason.
+        """
+        self.last_error = ""
         if not text:
+            self.last_error = "empty text"
             return False
         if not self._has_wl_copy or not self._has_ydotool:
-            log.error("wl-copy or ydotool not available, cannot inject text")
+            missing = []
+            if not self._has_wl_copy:
+                missing.append("wl-copy")
+            if not self._has_ydotool:
+                missing.append("ydotool")
+            self.last_error = f"missing tools: {', '.join(missing)}"
+            log.error("Cannot inject text: %s", self.last_error)
             return False
 
         # Save current clipboard
@@ -77,12 +84,15 @@ class TextInjector:
 
         # Copy text to clipboard
         if not self._run(["wl-copy", "--", text]):
+            self.last_error = "wl-copy failed"
             return False
 
         time.sleep(0.05)
 
         # Paste via ydotool
         ok = self._run(["ydotool", "key"] + self._paste_keys)
+        if not ok:
+            self.last_error = "ydotool key simulation failed (is ydotoold running?)"
 
         # Restore clipboard after a short delay
         if old_clip is not None:

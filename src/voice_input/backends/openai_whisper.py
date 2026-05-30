@@ -43,6 +43,11 @@ class OpenAIWhisperBackend(TranscriptionBackend):
         return False
 
     async def initialize(self) -> None:
+        if not self._client.headers.get("Authorization", "").replace("Bearer ", ""):
+            raise RecognitionError(
+                "OpenAI API key not configured",
+                user_message="OpenAI API key not set. Configure in Settings > STT.",
+            )
         log.info("OpenAI Whisper backend initialized (base=%s, model=%s)", self.api_base, self.model)
 
     def _encode_wav(self, audio_data: np.ndarray) -> bytes:

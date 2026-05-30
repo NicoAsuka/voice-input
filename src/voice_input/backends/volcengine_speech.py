@@ -67,8 +67,10 @@ class VolcengineSpeechBackend(TranscriptionBackend):
 
     async def initialize(self) -> None:
         if not self.app_id or not self.access_key:
-            log.warning("Volcengine credentials not fully configured")
-            return
+            raise RecognitionError(
+                "Volcengine credentials not configured",
+                user_message="Volcengine app ID or access key not set. Configure in Settings > STT.",
+            )
         log.info(
             "Volcengine Speech backend initialized (app_id=%s, resource_id=%s)",
             self.app_id,
@@ -274,7 +276,7 @@ class VolcengineSpeechBackend(TranscriptionBackend):
             backend_id="volcengine",
             model_id=self.resource_id,
             capabilities=BackendCapabilities(
-                supports_streaming=True,
+                supports_streaming=False,  # websocket transport, but no partial results exposed
                 requires_network=True,
                 supports_vad=False,
             ),

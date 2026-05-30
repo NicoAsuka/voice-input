@@ -164,7 +164,7 @@ def test_describe_returns_descriptor():
     assert isinstance(desc, BackendDescriptor)
     assert desc.backend_id == "volcengine"
     assert desc.model_id == "volc.test.resource"
-    assert desc.capabilities.supports_streaming is True
+    assert desc.capabilities.supports_streaming is False
     assert desc.capabilities.requires_network is True
     assert desc.capabilities.supports_vad is False
 

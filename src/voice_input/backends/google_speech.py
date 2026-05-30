@@ -49,8 +49,10 @@ class GoogleSpeechBackend(TranscriptionBackend):
     async def initialize(self) -> None:
         """Load Google service account credentials and refresh an access token."""
         if not self.credentials_path:
-            log.warning("Google credentials path not set")
-            return
+            raise RecognitionError(
+                "Google credentials path not set",
+                user_message="Google Speech credentials not configured. Set path in Settings > STT.",
+            )
 
         try:
             from google.auth.transport.requests import Request
@@ -65,6 +67,10 @@ class GoogleSpeechBackend(TranscriptionBackend):
             log.info("Google Speech backend initialized")
         except Exception as e:
             log.error("Failed to load Google credentials: %s", e)
+            raise RecognitionError(
+                str(e),
+                user_message=f"Google credentials error: {e}",
+            ) from e
 
     def _map_language(self, language: str) -> str:
         """Map app language codes to the BCP-47 codes expected by Google."""

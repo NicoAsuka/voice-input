@@ -1,6 +1,6 @@
 # Maintainer: Voice Input
 pkgname=voice-input
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Voice input for KDE Plasma 6 (Wayland)"
 arch=('any')
@@ -11,14 +11,12 @@ depends=(
     'python-sounddevice'
     'qt6-wayland'
     'wl-clipboard'
-    'wtype'
+    'ydotool'
     'libnotify'
-    'fcitx5'
+    'python-evdev'
 )
 optdepends=(
-    'ydotool: fallback text injection'
-    'cuda: GPU acceleration for whisper'
-    'python-evdev: hold-mode hotkey via evdev'
+    'python-keyring: store API keys in KDE Wallet'
 )
 makedepends=('python-build' 'python-installer' 'python-setuptools')
 source=()
@@ -26,13 +24,8 @@ source=()
 package() {
     cd "$srcdir/.."
 
-    # Install Python package
+    # Install Python package (sherpa-onnx model downloaded on first run)
     python -m installer --destdir="$pkgdir" dist/*.whl
-
-    # venv with faster-whisper (heavy dependency, isolated)
-    local venv_dir="$pkgdir/opt/voice-input/venv"
-    python -m venv "$venv_dir"
-    "$venv_dir/bin/pip" install --no-cache-dir faster-whisper dbus-next httpx qasync keyring
 
     # Desktop file
     install -Dm644 src/voice_input/resources/voice-input.desktop \

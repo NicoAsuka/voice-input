@@ -261,11 +261,11 @@ async def test_download_cancellation_cleans_staging_dir(
     meta, model_bytes, tokens_bytes = fake_paraformer_meta
     from voice_input.asr import model_manager
 
-    async def cancel_download(client, url, dest, expected_sha256):
+    def cancel_download(url, dest, expected_sha256):
         (dest.parent / "leftover.part").write_bytes(b"partial")
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(model_manager, "_download_to_path", cancel_download)
+    monkeypatch.setattr(model_manager, "_download_to_path_sync", cancel_download)
 
     with pytest.raises(asyncio.CancelledError):
         await model_manager._download_meta_to_dir(meta, tmp_path / "test-model")
